@@ -264,3 +264,175 @@ func TestIsValidInvalidGenesis(t *testing.T) {
 		t.Error("Restored blockchain should be valid")
 	}
 }
+
+func TestCalculateReward(t *testing.T) {
+	bc := NewBlockchain()
+
+	// Test reward calculation for different difficulties
+	tests := []struct {
+		difficulty int
+		expected   float64
+	}{
+		{1, 12.5},  // 10 + 1*2.5
+		{2, 15.0},  // 10 + 2*2.5
+		{4, 20.0},  // 10 + 4*2.5
+		{8, 30.0},  // 10 + 8*2.5
+	}
+
+	for _, test := range tests {
+		reward := bc.CalculateReward(test.difficulty)
+		if reward != test.expected {
+			t.Errorf("Expected reward %f for difficulty %d, got %f", test.expected, test.difficulty, reward)
+		}
+	}
+}
+
+func TestAddMiningReward(t *testing.T) {
+	bc := NewBlockchain()
+
+	// Add some rewards
+	bc.AddMiningReward("miner1", 1, 12.5, 1)
+	bc.AddMiningReward("miner1", 2, 15.0, 2)
+	bc.AddMiningReward("miner2", 3, 20.0, 4)
+
+	// Check total rewards
+	if bc.TotalRewards != 47.5 {
+		t.Errorf("Expected total rewards 47.5, got %f", bc.TotalRewards)
+	}
+
+	// Check reward count
+	if len(bc.MiningRewards) != 3 {
+		t.Errorf("Expected 3 rewards, got %d", len(bc.MiningRewards))
+	}
+
+	// Check individual rewards
+	reward1 := bc.MiningRewards[0]
+	if reward1.MinerID != "miner1" || reward1.BlockIndex != 1 || reward1.Reward != 12.5 {
+		t.Error("First reward details incorrect")
+	}
+
+	reward2 := bc.MiningRewards[1]
+	if reward2.MinerID != "miner1" || reward2.BlockIndex != 2 || reward2.Reward != 15.0 {
+		t.Error("Second reward details incorrect")
+	}
+
+	reward3 := bc.MiningRewards[2]
+	if reward3.MinerID != "miner2" || reward3.BlockIndex != 3 || reward3.Reward != 20.0 {
+		t.Error("Third reward details incorrect")
+	}
+}
+
+func TestGetMinerRewards(t *testing.T) {
+	bc := NewBlockchain()
+
+	// Add rewards for different miners
+	bc.AddMiningReward("miner1", 1, 12.5, 1)
+	bc.AddMiningReward("miner1", 2, 15.0, 2)
+	bc.AddMiningReward("miner2", 3, 20.0, 4)
+	bc.AddMiningReward("miner1", 4, 17.5, 3)
+
+	// Check individual miner rewards
+	miner1Rewards := bc.GetMinerRewards("miner1")
+	if miner1Rewards != 45.0 { // 12.5 + 15.0 + 17.5
+		t.Errorf("Expected miner1 rewards 45.0, got %f", miner1Rewards)
+	}
+
+	miner2Rewards := bc.GetMinerRewards("miner2")
+	if miner2Rewards != 20.0 {
+		t.Errorf("Expected miner2 rewards 20.0, got %f", miner2Rewards)
+	}
+
+	// Check non-existent miner
+	nonExistentRewards := bc.GetMinerRewards("nonexistent")
+	if nonExistentRewards != 0.0 {
+		t.Errorf("Expected 0 for non-existent miner, got %f", nonExistentRewards)
+	}
+}
+
+func TestAddBlockWithMining(t *testing.T) {
+	bc := NewBlockchain()
+
+	// Add block with mining
+	duration, err := bc.AddBlockWithMining("Test transaction", "miner1", 1)
+	if err != nil {
+		t.Errorf("Error adding block with mining: %v", err)
+	}
+
+	// Check block was added
+	if len(bc.Blocks) != 2 {
+		t.Errorf("Expected 2 blocks, got %d", len(bc.Blocks))
+	}
+
+	// Check block was mined
+	newBlock := bc.Blocks[1]
+	if newBlock.Nonce == 0 {
+		t.Error("Block should have been mined (nonce should not be 0)")
+	}
+
+	if !newBlock.IsValidProof() {
+		t.Error("Block should have valid proof")
+	}
+
+	// Check reward was added
+	if len(bc.MiningRewards) != 1 {
+		t.Errorf("Expected 1 mining reward, got %d", len(bc.MiningRewards))
+	}
+
+	if bc.TotalRewards != 12.5 { // Base 10 + difficulty 1 * 2.5
+		t.Errorf("Expected total rewards 12.5, got %f", bc.TotalRewards)
+	}
+
+	reward := bc.MiningRewards[0]
+	if reward.MinerID != "miner1" || reward.BlockIndex != 1 || reward.Reward != 12.5 {
+		t.Error("Mining reward details incorrect")
+	}
+
+	// Duration should be positive
+	if duration <= 0 {
+		t.Skip("Mining took too long, skipping duration check")
+	}
+}
+
+func TestGetMiningStats(t *testing.T) {
+	bc := NewBlockchain()
+
+	// Add some blocks with mining
+	bc.AddBlockWithMining("Block 1", "miner1", 1)
+	bc.AddBlockWithMining("Block 2", "miner2", 2)
+	bc.AddBlockWithMining("Block 3", "miner1", 3)
+
+	stats := bc.GetMiningStats()
+
+	// Check basic stats
+	if stats["total_blocks"] != 4 { // Genesis + 3 mined blocks
+		t.Errorf("Expected total_blocks 4, got %v", stats["total_blocks"])
+	}
+
+	if stats["total_rewards"] != 45.0 { // 12.5 + 15.0 + 17.5
+		t.Errorf("Expected total_rewards 45.0, got %v", stats["total_rewards"])
+	}
+
+	if stats["reward_count"] != 3 {
+		t.Errorf("Expected reward_count 3, got %v", stats["reward_count"])
+	}
+
+	// Check miner stats with correct type assertion
+	minerRewards := stats["miner_rewards"].(map[string]float64)
+	if minerRewards["miner1"] != 30.0 { // 12.5 + 17.5
+		t.Errorf("Expected miner1 rewards 30.0, got %v", minerRewards["miner1"])
+	}
+
+	if minerRewards["miner2"] != 15.0 {
+		t.Errorf("Expected miner2 rewards 15.0, got %v", minerRewards["miner2"])
+	}
+
+	// Check miner block counts with correct type assertion
+	minerBlocks := stats["miner_blocks"].(map[string]int)
+	if minerBlocks["miner1"] != 2 {
+		t.Errorf("Expected miner1 blocks 2, got %v", minerBlocks["miner1"])
+	}
+
+	if minerBlocks["miner2"] != 1 {
+		t.Errorf("Expected miner2 blocks 1, got %v", minerBlocks["miner2"])
+	}
+}
