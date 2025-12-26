@@ -247,3 +247,20 @@ func TestPrintBlockChain(t *testing.T) {
 	// Just call it to cover the function - output goes to stdout
 	bc.PrintBlockChain()
 }
+
+func TestIsValidInvalidGenesis(t *testing.T) {
+	bc := NewBlockchain()
+	// Tamper with genesis hash
+	originalHash := bc.Blocks[0].Hash
+	bc.Blocks[0].Hash = []byte("invalid")
+
+	if bc.IsValid() {
+		t.Error("Blockchain with invalid genesis should be invalid")
+	}
+
+	// Restore
+	bc.Blocks[0].Hash = originalHash
+	if !bc.IsValid() {
+		t.Error("Restored blockchain should be valid")
+	}
+}
