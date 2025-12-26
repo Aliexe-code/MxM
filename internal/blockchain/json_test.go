@@ -207,7 +207,7 @@ func TestBlockchainSaveToFileError(t *testing.T) {
 	bc := NewBlockchain()
 
 	// Try to save to an invalid path
-	err := bc.SaveToFile("/invalid/path/blockchain.json")
+	err := bc.SaveToFile("/dev/null/invalid/blockchain.json")
 	if err == nil {
 		t.Error("SaveToFile should fail with invalid path")
 	}
