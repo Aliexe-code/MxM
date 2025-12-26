@@ -70,7 +70,7 @@ func (b *Block) MineBlock(difficulty int) time.Duration {
 // MineBlockCancellable returns a ProofOfWork instance that can be cancelled
 func (b *Block) MineBlockCancellable(difficulty int) (*ProofOfWork, func() time.Duration) {
 	pow := NewProofOfWork(b, difficulty)
-	
+
 	// Return the mining function that can be called to start mining
 	miningFunc := func() time.Duration {
 		nonce, hash, duration := pow.Run()
@@ -84,7 +84,7 @@ func (b *Block) MineBlockCancellable(difficulty int) (*ProofOfWork, func() time.
 		}
 		return duration
 	}
-	
+
 	return pow, miningFunc
 }
 
