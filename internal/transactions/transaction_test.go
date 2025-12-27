@@ -1950,3 +1950,173 @@ func TestGetSigningMessageWithVariousInputs(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, message)
 }
+
+func TestToJSONWithUnmarshalableData(t *testing.T) {
+	// Test ToJSON with edge case data
+	tx := &Transaction{
+		ID: "test_edge_case",
+		Inputs: []TxInput{{
+			TxID:      "prev",
+			Index:     0,
+			Signature: "sig_with_特殊_字符",
+			PublicKey: "key_with_特殊_字符",
+		}},
+		Outputs: []TxOutput{{
+			Address: testAddress,
+			Amount:  1.797693134862315708145274237317043567981e+308, // Near max float64
+		}},
+		Timestamp: 9223372036854775807, // Max int64
+	}
+
+	// This should work with edge case data
+	jsonStr, err := tx.ToJSON()
+	assert.NoError(t, err)
+	assert.NotEmpty(t, jsonStr)
+	assert.Contains(t, jsonStr, "test_edge_case")
+}
+
+func TestCalculateIDWithJSONErrorPath(t *testing.T) {
+	// Test CalculateID path that might trigger JSON errors
+	// Create transaction with data that could cause issues
+	tx := &Transaction{
+		ID: "test",
+		Inputs: []TxInput{{
+			TxID:      strings.Repeat("x", 10000), // Very long string
+			Index:     0,
+			Signature: "",
+			PublicKey: "",
+		}},
+		Outputs: []TxOutput{{
+			Address: testAddress,
+			Amount:  1.0,
+		}},
+		Timestamp: 0,
+	}
+
+	// Should still generate an ID
+	id := tx.CalculateID()
+	assert.NotEmpty(t, id)
+	assert.Len(t, id, 64)
+}
+
+func TestValidateAmountsComplexScenarios(t *testing.T) {
+	// Test complex amount validation scenarios
+	tests := []struct {
+		name    string
+		tx      *Transaction
+		wantErr bool
+	}{
+		{
+			name: "coinbase with very small amount",
+			tx: &Transaction{
+				ID:      "test",
+				Inputs:  []TxInput{},
+				Outputs: []TxOutput{{Address: testAddress, Amount: math.SmallestNonzeroFloat64}},
+			},
+			wantErr: false, // Should pass - small positive amount
+		},
+		{
+			name: "regular transaction with sub-normal amount",
+			tx: &Transaction{
+				ID:      "test",
+				Inputs:  []TxInput{{TxID: "prev", Index: 0}},
+				Outputs: []TxOutput{{Address: testAddress, Amount: 1e-310}}, // Very small
+			},
+			wantErr: true, // Should fail - too small
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.tx.ValidateAmounts()
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateBasicComplexValidation(t *testing.T) {
+	// Test more complex validation scenarios
+	tests := []struct {
+		name    string
+		tx      *Transaction
+		wantErr bool
+	}{
+		{
+			name: "transaction with both inputs and outputs empty",
+			tx: &Transaction{
+				ID:      "test",
+				Inputs:  []TxInput{},
+				Outputs: []TxOutput{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "transaction with negative amount in output",
+			tx: &Transaction{
+				ID:      "test",
+				Inputs:  []TxInput{{TxID: "prev", Index: 0}},
+				Outputs: []TxOutput{{Address: testAddress, Amount: -0.1}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "transaction with zero amount in output",
+			tx: &Transaction{
+				ID:      "test",
+				Inputs:  []TxInput{{TxID: "prev", Index: 0}},
+				Outputs: []TxOutput{{Address: testAddress, Amount: 0.0}},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.tx.ValidateBasic()
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateTransactionStructureComplexPaths(t *testing.T) {
+	// Test complex validation paths in ValidateTransactionStructure
+	tx := NewTransaction(
+		[]TxInput{{TxID: "prev", Index: 0}},
+		[]TxOutput{{Address: testAddress, Amount: 1.0}},
+	)
+
+	// Create UTXO set with invalid address in referenced output
+	utxoSet := map[string]map[int]TxOutput{
+		"prev": {0: {Address: "invalid", Amount: 2.0}},
+	}
+
+	err := tx.ValidateTransactionStructure(utxoSet)
+	assert.Error(t, err)
+}
+
+func TestGetValidationReportComplexPaths(t *testing.T) {
+	// Test complex paths in GetValidationReport
+	tx := NewTransaction(
+		[]TxInput{{TxID: "prev", Index: 0}},
+		[]TxOutput{{Address: testAddress, Amount: 0.001}}, // Small amount
+	)
+	
+	// Create UTXO set that would cause multiple validation errors
+	utxoSet := map[string]map[int]TxOutput{
+		"prev": {0: {Address: testAddress2, Amount: 10.0}},
+	}
+
+	report := tx.GetValidationReport(utxoSet)
+	
+	// Should have validation errors due to signature verification
+	assert.False(t, report["is_valid"].(bool))
+	assert.NotEmpty(t, report["errors"].([]string))
+}
