@@ -923,7 +923,7 @@ func TestConcurrentReadWrite(t *testing.T) {
 
 	// Concurrent reads and writes
 	done := make(chan bool, 10)
-	
+
 	// Start 5 readers
 	for i := 0; i < 5; i++ {
 		go func() {
@@ -933,7 +933,7 @@ func TestConcurrentReadWrite(t *testing.T) {
 			done <- true
 		}()
 	}
-	
+
 	// Start 5 writers
 	for i := 0; i < 5; i++ {
 		go func(index int) {

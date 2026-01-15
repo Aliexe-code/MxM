@@ -6,7 +6,7 @@ import (
 )
 
 // ValidateAmounts validates transaction amounts and sums
-func (tx *Transaction) ValidateAmounts() error {
+func (tx *Transaction) ValidateAmounts(utxoSet map[string]map[int]TxOutput) error {
 	if tx.IsCoinbase() {
 		if len(tx.Outputs) != 1 {
 			return fmt.Errorf("coinbase transaction must have exactly one output")
@@ -18,7 +18,7 @@ func (tx *Transaction) ValidateAmounts() error {
 	}
 
 	// Calculate total input and output amounts
-	inputAmount := tx.GetInputAmount()
+	inputAmount := tx.GetInputAmount(utxoSet)
 	outputAmount := tx.GetOutputAmount()
 
 	// Check that output amount doesn't exceed input amount
@@ -28,7 +28,7 @@ func (tx *Transaction) ValidateAmounts() error {
 	}
 
 	// Check that fee is non-negative
-	fee := tx.GetFee()
+	fee := tx.GetFee(utxoSet)
 	if fee < 0 {
 		return fmt.Errorf("transaction fee cannot be negative: %.8f", fee)
 	}
@@ -148,7 +148,7 @@ func (tx *Transaction) ValidateTransactionStructure(utxoSet map[string]map[int]T
 	}
 
 	// Amount validation
-	if err := tx.ValidateAmounts(); err != nil {
+	if err := tx.ValidateAmounts(utxoSet); err != nil {
 		return fmt.Errorf("amount validation failed: %w", err)
 	}
 
@@ -176,7 +176,7 @@ func (tx *Transaction) GetValidationReport(utxoSet map[string]map[int]TxOutput) 
 		"input_count":  len(tx.Inputs),
 		"output_count": len(tx.Outputs),
 		"total_amount": tx.GetOutputAmount(),
-		"fee":          tx.GetFee(),
+		"fee":          tx.GetFee(utxoSet),
 		"is_coinbase":  tx.IsCoinbase(),
 	}
 
@@ -185,7 +185,7 @@ func (tx *Transaction) GetValidationReport(utxoSet map[string]map[int]TxOutput) 
 		report["errors"] = append(report["errors"].([]string), fmt.Sprintf("Basic: %v", err))
 	}
 
-	if err := tx.ValidateAmounts(); err != nil {
+	if err := tx.ValidateAmounts(utxoSet); err != nil {
 		report["errors"] = append(report["errors"].([]string), fmt.Sprintf("Amounts: %v", err))
 	}
 
@@ -194,7 +194,7 @@ func (tx *Transaction) GetValidationReport(utxoSet map[string]map[int]TxOutput) 
 	}
 
 	// Check for warnings
-	if tx.GetFee() > 0.01 {
+	if tx.GetFee(utxoSet) > 0.01 {
 		report["warnings"] = append(report["warnings"].([]string), "High transaction fee")
 	}
 

@@ -64,18 +64,43 @@ func (fs *FileStorage) SaveBlockchain(bc *blockchain.Blockchain) error {
 
 	// Write checksum first
 	checksumFile := filepath.Join(fs.dataDir, ChecksumFileName)
-	if err := os.WriteFile(checksumFile, []byte(hex.EncodeToString(checksum[:])), 0644); err != nil {
+	if err := os.WriteFile(checksumFile, []byte(hex.EncodeToString(checksum[:])), 0600); err != nil {
 		return fmt.Errorf("failed to write checksum: %w", err)
+	}
+
+	// Sync checksum to disk
+	if f, err := os.Open(checksumFile); err == nil {
+		f.Sync()
+		f.Close()
 	}
 
 	// Write to temporary file first
 	tempFile := fs.chainFile + ".tmp"
-	if err := os.WriteFile(tempFile, jsonData, 0644); err != nil {
+	lockFile := fs.chainFile + ".lock"
+
+	// Create exclusive lock file to prevent concurrent writes
+	lock, err := os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	defer func() {
+		lock.Close()
+		os.Remove(lockFile)
+	}()
+
+	if err := os.WriteFile(tempFile, jsonData, 0600); err != nil {
 		return fmt.Errorf("failed to write temporary file: %w", err)
+	}
+
+	// Sync to disk before rename
+	if f, err := os.Open(tempFile); err == nil {
+		f.Sync()
+		f.Close()
 	}
 
 	// Rename temp file to actual file (atomic operation)
 	if err := os.Rename(tempFile, fs.chainFile); err != nil {
+		os.Remove(tempFile) // Cleanup on failure
 		return fmt.Errorf("failed to rename temporary file: %w", err)
 	}
 
@@ -134,6 +159,10 @@ func (fs *FileStorage) createBackup() error {
 	if err := copyFile(fs.chainFile, backupFile); err != nil {
 		return fmt.Errorf("Failed to copy file to backup: %w", err)
 	}
+	// Set secure permissions on backup
+	if err := os.Chmod(backupFile, 0600); err != nil {
+		return fmt.Errorf("Failed to set permissions on backup: %w", err)
+	}
 	if err := fs.cleanOldBackups(); err != nil {
 		return fmt.Errorf("Failed to clean old backups: %w", err)
 	}
@@ -174,10 +203,14 @@ func (fs *FileStorage) recoverFromBackup() (*blockchain.Blockchain, error) {
 	if err := copyFile(latestBackup, fs.chainFile); err != nil {
 		return nil, fmt.Errorf("Failed to restore from backup: %w", err)
 	}
+	// Set secure permissions on restored file
+	if err := os.Chmod(fs.chainFile, 0600); err != nil {
+		return nil, fmt.Errorf("Failed to set permissions on restored file: %w", err)
+	}
 	// Recalculate and save checksum for restored blockchain
 	checksum := sha256.Sum256(jsonData)
 	checksumFile := filepath.Join(fs.dataDir, ChecksumFileName)
-	if err := os.WriteFile(checksumFile, []byte(hex.EncodeToString(checksum[:])), 0644); err != nil {
+	if err := os.WriteFile(checksumFile, []byte(hex.EncodeToString(checksum[:])), 0600); err != nil {
 		return nil, fmt.Errorf("Failed to write checksum after restore: %w", err)
 	}
 	return bc, nil

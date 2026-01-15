@@ -111,8 +111,8 @@ func (tx *Transaction) OptimizeTransaction(minOutputValue float64) {
 }
 
 // GetTransactionSummary returns a summary of transaction statistics
-func (tx *Transaction) GetTransactionSummary() map[string]interface{} {
-	fee := tx.GetFee()
+func (tx *Transaction) GetTransactionSummary(utxoSet map[string]map[int]TxOutput) map[string]interface{} {
+	fee := tx.GetFee(utxoSet)
 	estimatedSize := EstimateTransactionSize(len(tx.Inputs), len(tx.Outputs))
 	feeRate := fee / float64(estimatedSize)
 
@@ -121,7 +121,7 @@ func (tx *Transaction) GetTransactionSummary() map[string]interface{} {
 		"is_coinbase":    tx.IsCoinbase(),
 		"input_count":    len(tx.Inputs),
 		"output_count":   len(tx.Outputs),
-		"total_input":    tx.GetInputAmount(),
+		"total_input":    tx.GetInputAmount(utxoSet),
 		"total_output":   tx.GetOutputAmount(),
 		"fee":            fee,
 		"estimated_size": estimatedSize,

@@ -99,14 +99,22 @@ func TestDiscoveryUpdatePeerReputationRemoveLowScore(t *testing.T) {
 	addr := "127.0.0.1:8000"
 	discovery.addKnownPeer(addr)
 
-	// Decrease score below zero
-	for i := 0; i < 110; i++ {
-		discovery.updatePeerReputation(addr, -1)
+	// Reduce reputation below threshold
+	for i := 0; i < MaxFailCount; i++ {
+		discovery.updatePeerReputation(addr, -10)
 	}
 
+	// Peer should be banned, not removed
 	peers := discovery.GetKnownPeers()
-	if _, exists := peers[addr]; exists {
-		t.Error("Peer with low score should be removed")
+	if _, exists := peers[addr]; !exists {
+		t.Error("Peer should still exist but be banned")
+	}
+
+	// Check that peer is banned
+	if rep, exists := peers[addr]; exists {
+		if !rep.Banned {
+			t.Error("Peer should be banned")
+		}
 	}
 }
 

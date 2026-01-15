@@ -213,7 +213,7 @@ func TestDatabaseGetBlocksByTimeRange(t *testing.T) {
 	bc.AddBlock("Block 1")
 	bc.Blocks[1].Timestamp = now - 1800 // 30 min ago
 	bc.AddBlock("Block 2")
-	bc.Blocks[2].Timestamp = now - 900  // 15 min ago
+	bc.Blocks[2].Timestamp = now - 900 // 15 min ago
 
 	if err := ds.SaveBlockchain(bc); err != nil {
 		t.Fatalf("Failed to save blockchain: %v", err)

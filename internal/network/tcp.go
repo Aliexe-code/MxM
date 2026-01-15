@@ -36,6 +36,13 @@ func NewPeer(conn net.Conn, id string) *Peer {
 	portNum := 0
 	fmt.Sscanf(port, "%d", &portNum)
 
+	// Configure TCP keepalive
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+		tcpConn.SetNoDelay(true) // Disable Nagle's algorithm for better latency
+	}
+
 	return &Peer{
 		info: PeerInfo{
 			ID:        id,
@@ -85,9 +92,29 @@ func (p *Peer) Close() error {
 		return nil
 	}
 
+	// Signal goroutines to stop
 	close(p.closeChan)
 	p.info.Connected = false
-	return p.conn.Close()
+
+	// Drain send channel to prevent deadlock
+	go func() {
+		for range p.sendChan {
+		}
+	}()
+
+	// Close connection with timeout
+	done := make(chan error, 1)
+	go func() {
+		done <- p.conn.Close()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		// Force close if timeout
+		return p.conn.Close()
+	}
 }
 
 // IsConnected returns whether the peer is connected
@@ -107,6 +134,13 @@ func (p *Peer) startSender() {
 				if err != nil {
 					fmt.Printf("Error serializing message: %v\n", err)
 					continue
+				}
+
+				// Set write deadline to prevent blocking
+				if err := p.conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					fmt.Printf("Error setting write deadline: %v\n", err)
+					p.Close()
+					return
 				}
 
 				if _, err := p.conn.Write(data); err != nil {
@@ -153,6 +187,11 @@ func (p *Peer) startReceiver(handler MessageHandler) error {
 
 // readMessage reads a complete message from the connection
 func (p *Peer) readMessage() ([]byte, error) {
+	// Set read deadline to prevent blocking
+	if err := p.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return nil, fmt.Errorf("failed to set read deadline: %w", err)
+	}
+
 	// Read header first
 	header := make([]byte, HeaderSize)
 	_, err := io.ReadFull(p.conn, header)
@@ -185,6 +224,36 @@ func (p *Peer) readMessage() ([]byte, error) {
 		return nil, fmt.Errorf("message size %d exceeds maximum %d", length, MaxMessageSize)
 	}
 
+	// Read signature length (2 bytes)
+	sigLenBytes := make([]byte, 2)
+	if _, err := io.ReadFull(p.conn, sigLenBytes); err != nil {
+		return nil, fmt.Errorf("failed to read signature length: %w", err)
+	}
+	sigLen := binary.BigEndian.Uint16(sigLenBytes)
+
+	// Read signature
+	signature := make([]byte, sigLen)
+	if sigLen > 0 {
+		if _, err := io.ReadFull(p.conn, signature); err != nil {
+			return nil, fmt.Errorf("failed to read signature: %w", err)
+		}
+	}
+
+	// Read node ID length (2 bytes)
+	nodeIDLenBytes := make([]byte, 2)
+	if _, err := io.ReadFull(p.conn, nodeIDLenBytes); err != nil {
+		return nil, fmt.Errorf("failed to read node ID length: %w", err)
+	}
+	nodeIDLen := binary.BigEndian.Uint16(nodeIDLenBytes)
+
+	// Read node ID
+	nodeID := make([]byte, nodeIDLen)
+	if nodeIDLen > 0 {
+		if _, err := io.ReadFull(p.conn, nodeID); err != nil {
+			return nil, fmt.Errorf("failed to read node ID: %w", err)
+		}
+	}
+
 	// Read payload
 	payload := make([]byte, length)
 	_, err = io.ReadFull(p.conn, payload)
@@ -192,10 +261,14 @@ func (p *Peer) readMessage() ([]byte, error) {
 		return nil, fmt.Errorf("failed to read payload: %w", err)
 	}
 
-	// Combine header and payload
-	fullMessage := make([]byte, HeaderSize+length)
-	copy(fullMessage, header)
-	copy(fullMessage[HeaderSize:], payload)
+	// Combine all parts
+	fullMessage := make([]byte, 0, HeaderSize+2+uint32(sigLen)+2+uint32(nodeIDLen)+length)
+	fullMessage = append(fullMessage, header...)
+	fullMessage = append(fullMessage, sigLenBytes...)
+	fullMessage = append(fullMessage, signature...)
+	fullMessage = append(fullMessage, nodeIDLenBytes...)
+	fullMessage = append(fullMessage, nodeID...)
+	fullMessage = append(fullMessage, payload...)
 
 	return fullMessage, nil
 }
@@ -214,16 +287,21 @@ type Server struct {
 	peerCounter int
 	mu          sync.Mutex
 	closeChan   chan struct{}
+	maxPeers    int
+	rateLimiter map[string]time.Time
+	rateMu      sync.RWMutex
 }
 
 // NewServer creates a new TCP server
 func NewServer(address string, port int, handler MessageHandler) *Server {
 	return &Server{
-		address:   address,
-		port:      port,
-		peers:     make(map[string]*Peer),
-		handler:   handler,
-		closeChan: make(chan struct{}),
+		address:     address,
+		port:        port,
+		peers:       make(map[string]*Peer),
+		handler:     handler,
+		closeChan:   make(chan struct{}),
+		maxPeers:    100,
+		rateLimiter: make(map[string]time.Time),
 	}
 }
 
@@ -287,6 +365,31 @@ func (s *Server) acceptConnections() {
 
 // handleConnection handles a new connection
 func (s *Server) handleConnection(conn net.Conn) {
+	remoteAddr := conn.RemoteAddr().String()
+
+	// Check connection limit
+	s.peersMu.RLock()
+	peerCount := len(s.peers)
+	s.peersMu.RUnlock()
+
+	if peerCount >= s.maxPeers {
+		fmt.Printf("Connection rejected: max peers (%d) reached from %s\n", s.maxPeers, remoteAddr)
+		conn.Close()
+		return
+	}
+
+	// Check rate limiting
+	s.rateMu.Lock()
+	lastConn, exists := s.rateLimiter[remoteAddr]
+	if exists && time.Since(lastConn) < 1*time.Second {
+		s.rateMu.Unlock()
+		fmt.Printf("Connection rejected: rate limited from %s\n", remoteAddr)
+		conn.Close()
+		return
+	}
+	s.rateLimiter[remoteAddr] = time.Now()
+	s.rateMu.Unlock()
+
 	s.mu.Lock()
 	s.peerCounter++
 	peerID := fmt.Sprintf("peer-%d", s.peerCounter)

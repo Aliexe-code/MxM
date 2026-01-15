@@ -36,8 +36,8 @@ func TestNewKeyPair(t *testing.T) {
 		t.Errorf("Address should start with 0x, got: %s", keyPair.Address)
 	}
 
-	if len(keyPair.Address) != 42 { // 0x + 40 hex chars
-		t.Errorf("Address should be 42 characters long, got: %d", len(keyPair.Address))
+	if len(keyPair.Address) != 50 { // 0x + 48 hex chars (24 bytes with checksum)
+		t.Errorf("Address should be 50 characters long, got: %d", len(keyPair.Address))
 	}
 }
 
@@ -64,25 +64,25 @@ func TestGenerateAddress(t *testing.T) {
 }
 
 func TestValidateAddress(t *testing.T) {
-	validAddresses := []string{
-		"0x1234567890123456789012345678901234567890",
-		"0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-		"0x0000000000000000000000000000000000000000",
+	// Generate a valid address to test
+	keyPair, err := NewKeyPair()
+	if err != nil {
+		t.Fatalf("Failed to generate key pair: %v", err)
+	}
+
+	validAddress := keyPair.Address
+	if !ValidateAddress(validAddress) {
+		t.Errorf("Generated valid address rejected: %s", validAddress)
 	}
 
 	invalidAddresses := []string{
-		"1234567890123456789012345678901234567890",    // missing 0x
-		"0x123456789012345678901234567890123456789",   // too short
-		"0x12345678901234567890123456789012345678900", // too long
-		"0xg234567890123456789012345678901234567890",  // invalid hex
+		"1234567890123456789012345678901234567890123456789012",    // missing 0x
+		"0x123456789012345678901234567890123456789012345678901",   // too short
+		"0x12345678901234567890123456789012345678901234567890123", // too long
+		"0xg234567890123456789012345678901234567890123456789012",  // invalid hex
 		"",   // empty
 		"0x", // just prefix
-	}
-
-	for _, addr := range validAddresses {
-		if !ValidateAddress(addr) {
-			t.Errorf("Valid address rejected: %s", addr)
-		}
+		"0x1234567890123456789012345678901234567890123456789012", // invalid checksum
 	}
 
 	for _, addr := range invalidAddresses {

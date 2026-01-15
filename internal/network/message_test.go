@@ -40,7 +40,8 @@ func TestMessageSerialize(t *testing.T) {
 		t.Fatalf("Failed to serialize message: %v", err)
 	}
 
-	expectedLen := HeaderSize + len(payload)
+	// Calculate expected length: HeaderSize (10) + signature length (2) + node ID length (2) + payload
+	expectedLen := HeaderSize + 2 + 2 + len(payload)
 	if len(data) != expectedLen {
 		t.Errorf("Expected data length %d, got %d", expectedLen, len(data))
 	}
@@ -213,8 +214,8 @@ func TestMessageValidateChecksumMismatch(t *testing.T) {
 
 func TestMessageTypeString(t *testing.T) {
 	tests := []struct {
-		msgType    MessageType
-		expected   string
+		msgType  MessageType
+		expected string
 	}{
 		{MessageTypePing, "PING"},
 		{MessageTypePong, "PONG"},

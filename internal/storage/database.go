@@ -139,7 +139,15 @@ func (ds *DatabaseStorage) SaveBlockchain(bc *blockchain.Blockchain) error {
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+
+	// Properly handle rollback errors
+	defer func() {
+		if err != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				err = fmt.Errorf("%w (rollback also failed: %v)", err, rbErr)
+			}
+		}
+	}()
 
 	// Clear existing data
 	if _, err := tx.Exec("DELETE FROM mining_rewards"); err != nil {
@@ -477,7 +485,15 @@ func (ds *DatabaseStorage) Delete() error {
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+
+	// Properly handle rollback errors
+	defer func() {
+		if err != nil {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				err = fmt.Errorf("%w (rollback also failed: %v)", err, rbErr)
+			}
+		}
+	}()
 
 	if _, err := tx.Exec("DELETE FROM mining_rewards"); err != nil {
 		return fmt.Errorf("failed to delete mining rewards: %w", err)

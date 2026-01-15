@@ -17,23 +17,33 @@ const (
 
 // PeerReputation tracks peer reputation
 type PeerReputation struct {
-	Score       int       `json:"score"`
-	LastContact time.Time `json:"last_contact"`
-	FailCount   int       `json:"fail_count"`
+	Score        int       `json:"score"`
+	LastContact  time.Time `json:"last_contact"`
+	FailCount    int       `json:"fail_count"`
+	SuccessCount int       `json:"success_count"`
+	Banned       bool      `json:"banned"`
+	BanUntil     time.Time `json:"ban_until"`
 }
+
+const (
+	MaxFailCount  = 5
+	BanDuration   = 1 * time.Hour
+	MinReputation = 0
+	MaxReputation = 1000
+)
 
 // Discovery manages peer discovery and health
 type Discovery struct {
-	server         *Server
-	bootstrapPeers []string
-	knownPeers     map[string]*PeerReputation
-	peersMu        sync.RWMutex
-	maxPeers       int
-	healthInterval time.Duration
-	peerTimeout    time.Duration
+	server            *Server
+	bootstrapPeers    []string
+	knownPeers        map[string]*PeerReputation
+	peersMu           sync.RWMutex
+	maxPeers          int
+	healthInterval    time.Duration
+	peerTimeout       time.Duration
 	discoveryInterval time.Duration
-	ctx            context.Context
-	cancel         context.CancelFunc
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
 // NewDiscovery creates a new peer discovery manager
@@ -82,6 +92,11 @@ func (d *Discovery) connectToBootstrapPeers() {
 
 // connectToPeer connects to a peer
 func (d *Discovery) connectToPeer(addr string) error {
+	// Check if peer is banned
+	if d.isPeerBanned(addr) {
+		return fmt.Errorf("peer %s is banned", addr)
+	}
+
 	d.peersMu.RLock()
 	_, exists := d.knownPeers[addr]
 	d.peersMu.RUnlock()
@@ -95,11 +110,12 @@ func (d *Discovery) connectToPeer(addr string) error {
 	})
 
 	if err := client.Connect(); err != nil {
-		d.updatePeerReputation(addr, -1)
+		d.updatePeerReputation(addr, -5)
 		return fmt.Errorf("failed to connect to peer %s: %w", addr, err)
 	}
 
 	d.addKnownPeer(addr)
+	d.updatePeerReputation(addr, 10) // Bonus for successful connection
 	fmt.Printf("Connected to bootstrap peer: %s\n", addr)
 
 	// Request peers from this peer
@@ -110,6 +126,35 @@ func (d *Discovery) connectToPeer(addr string) error {
 	return nil
 }
 
+// cleanUpExpiredBans removes expired bans
+func (d *Discovery) cleanUpExpiredBans() {
+	d.peersMu.Lock()
+	defer d.peersMu.Unlock()
+
+	now := time.Now()
+	for addr, rep := range d.knownPeers {
+		if rep.Banned && now.After(rep.BanUntil) {
+			rep.Banned = false
+			rep.BanUntil = time.Time{}
+			rep.Score = 50 // Reset to neutral reputation
+			fmt.Printf("Unbanned peer %s\n", addr)
+		}
+	}
+}
+
+// isPeerBanned checks if a peer is currently banned
+func (d *Discovery) isPeerBanned(addr string) bool {
+	d.peersMu.RLock()
+	defer d.peersMu.RUnlock()
+
+	if rep, exists := d.knownPeers[addr]; exists {
+		if rep.Banned && time.Now().Before(rep.BanUntil) {
+			return true
+		}
+	}
+	return false
+}
+
 // addKnownPeer adds a peer to the known peers list
 func (d *Discovery) addKnownPeer(addr string) {
 	d.peersMu.Lock()
@@ -117,9 +162,11 @@ func (d *Discovery) addKnownPeer(addr string) {
 
 	if _, exists := d.knownPeers[addr]; !exists {
 		d.knownPeers[addr] = &PeerReputation{
-			Score:       100,
-			LastContact: time.Now(),
-			FailCount:   0,
+			Score:        100,
+			LastContact:  time.Now(),
+			FailCount:    0,
+			SuccessCount: 0,
+			Banned:       false,
 		}
 	}
 }
@@ -130,17 +177,38 @@ func (d *Discovery) updatePeerReputation(addr string, delta int) {
 	defer d.peersMu.Unlock()
 
 	if rep, exists := d.knownPeers[addr]; exists {
+		// Check if peer is banned
+		if rep.Banned && time.Now().Before(rep.BanUntil) {
+			return // Don't update reputation while banned
+		}
+
+		// Update score with bounds
 		rep.Score += delta
+		if rep.Score < MinReputation {
+			rep.Score = MinReputation
+		}
+		if rep.Score > MaxReputation {
+			rep.Score = MaxReputation
+		}
+
 		rep.LastContact = time.Now()
 
 		if delta < 0 {
 			rep.FailCount++
 		} else {
+			rep.SuccessCount++
 			rep.FailCount = 0
 		}
 
-		// Remove peers with very low reputation
-		if rep.Score < 0 {
+		// Ban peer if too many failures
+		if rep.FailCount >= MaxFailCount {
+			rep.Banned = true
+			rep.BanUntil = time.Now().Add(BanDuration)
+			fmt.Printf("Banned peer %s for %v due to %d failures\n", addr, BanDuration, rep.FailCount)
+		}
+
+		// Remove peers with very low reputation (but not banned peers)
+		if rep.Score <= 0 && !rep.Banned {
 			delete(d.knownPeers, addr)
 			fmt.Printf("Removed peer %s due to low reputation\n", addr)
 		}
@@ -169,6 +237,7 @@ func (d *Discovery) healthCheckLoop() {
 		case <-d.ctx.Done():
 			return
 		case <-ticker.C:
+			d.cleanUpExpiredBans()
 			d.checkPeerHealth()
 		}
 	}
@@ -377,11 +446,11 @@ func (d *Discovery) GetStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"total_peers":       totalPeers,
-		"connected_peers":   connectedPeers,
-		"good_reputation":   goodReputation,
-		"max_peers":         d.maxPeers,
-		"bootstrap_peers":   len(d.bootstrapPeers),
+		"total_peers":     totalPeers,
+		"connected_peers": connectedPeers,
+		"good_reputation": goodReputation,
+		"max_peers":       d.maxPeers,
+		"bootstrap_peers": len(d.bootstrapPeers),
 	}
 }
 
@@ -396,6 +465,8 @@ func (d *Discovery) GetKnownPeers() map[string]*PeerReputation {
 			Score:       rep.Score,
 			LastContact: rep.LastContact,
 			FailCount:   rep.FailCount,
+			Banned:      rep.Banned,
+			BanUntil:    rep.BanUntil,
 		}
 	}
 	return peers
