@@ -121,11 +121,9 @@ func (mp *Mempool) AddTransaction(tx *Transaction) error {
 	// Add to mempool
 	mp.transactions[tx.ID] = entry
 
-	// Update address index
-	// For now, we'll use a simplified approach
-	// In a real implementation, we'd need to resolve input addresses
-	mp.byAddress["unknown"] = append(mp.byAddress["unknown"], tx.ID)
-
+	// Update address index - track output addresses
+	// Note: Input addresses would need to be derived from PublicKey, which requires crypto functions
+	// For now, we track output addresses which are directly available
 	for _, output := range tx.Outputs {
 		mp.byAddress[output.Address] = append(mp.byAddress[output.Address], tx.ID)
 	}
@@ -167,12 +165,17 @@ func (mp *Mempool) RemoveTransaction(txID string) bool {
 	delete(mp.transactions, txID)
 
 	// Remove from address index
-	for _, txIDs := range mp.byAddress {
-		for i, id := range txIDs {
-			if id == txID {
-				mp.byAddress[txIDs[0]] = append(txIDs[:i], txIDs[i+1:]...)
-				break
+	for address, txIDs := range mp.byAddress {
+		var filtered []string
+		for _, id := range txIDs {
+			if id != txID {
+				filtered = append(filtered, id)
 			}
+		}
+		if len(filtered) == 0 {
+			delete(mp.byAddress, address)
+		} else {
+			mp.byAddress[address] = filtered
 		}
 	}
 
@@ -235,25 +238,35 @@ func (mp *Mempool) GetTransactionsForBlock(maxSize, maxCount int) []*Transaction
 	mp.mu.Lock()
 	defer mp.mu.Unlock()
 
-	// Create a copy of the priority queue
-	pq := &PriorityQueue{}
-	heap.Init(pq)
+	if len(mp.transactions) == 0 {
+		return []*Transaction{}
+	}
 
-	// Add all valid transactions
+	// Create a copy of entries for selection
+	entries := make([]*MempoolEntry, 0, len(mp.transactions))
 	for _, entry := range mp.transactions {
 		if entry.Priority >= 0 { // Skip removed entries
-			heap.Push(pq, entry)
+			entries = append(entries, entry)
 		}
 	}
+
+	// Sort by priority (highest first)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Priority > entries[j].Priority
+	})
 
 	// Select transactions for block
 	var selected []*Transaction
 	var currentSize int
 
-	for pq.Len() > 0 && (maxCount == 0 || len(selected) < maxCount) {
-		entry := heap.Pop(pq).(*MempoolEntry)
-		
-		if currentSize+entry.Size > maxSize {
+	for _, entry := range entries {
+		// Check count limit
+		if maxCount > 0 && len(selected) >= maxCount {
+			break
+		}
+
+		// Check size limit
+		if maxSize > 0 && currentSize+entry.Size > maxSize {
 			continue
 		}
 
@@ -265,7 +278,7 @@ func (mp *Mempool) GetTransactionsForBlock(maxSize, maxCount int) []*Transaction
 }
 
 // ValidateAndRemoveInvalid removes invalid transactions from the mempool
-func (mp *Mempool) ValidateAndRemoveInvalid(utxoSet interface{}) []string { // TODO: Replace interface{} with UTXOSet type
+func (mp *Mempool) ValidateAndRemoveInvalid(utxoSet interface{}) []string {
 	mp.mu.Lock()
 	defer mp.mu.Unlock()
 
@@ -279,8 +292,44 @@ func (mp *Mempool) ValidateAndRemoveInvalid(utxoSet interface{}) []string { // T
 			continue
 		}
 
-		// TODO: Add UTXO validation when UTXOSet is properly imported
-		// This would validate that all inputs are still unspent
+		// Fee validation
+		if entry.Transaction.GetFee() <= 0 {
+			delete(mp.transactions, txID)
+			removed = append(removed, txID)
+			continue
+		}
+
+		// Size validation
+		txSize := EstimateTransactionSize(len(entry.Transaction.Inputs), len(entry.Transaction.Outputs))
+		if txSize > mp.config.MaxTxSize {
+			delete(mp.transactions, txID)
+			removed = append(removed, txID)
+			continue
+		}
+
+		// Age validation
+		if time.Since(entry.AddedAt) > mp.config.MaxAge {
+			delete(mp.transactions, txID)
+			removed = append(removed, txID)
+			continue
+		}
+	}
+
+	// Clean up address index for removed transactions
+	for _, txID := range removed {
+		for address, txIDs := range mp.byAddress {
+			var filtered []string
+			for _, id := range txIDs {
+				if id != txID {
+					filtered = append(filtered, id)
+				}
+			}
+			if len(filtered) == 0 {
+				delete(mp.byAddress, address)
+			} else {
+				mp.byAddress[address] = filtered
+			}
+		}
 	}
 
 	return removed
