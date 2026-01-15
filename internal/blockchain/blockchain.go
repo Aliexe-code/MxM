@@ -214,6 +214,8 @@ func (bc *Blockchain) FromJSON(data []byte) error {
 		return fmt.Errorf("Loaded blockchain is invalid")
 	}
 	bc.Blocks = newBlockchain.Blocks
+	bc.MiningRewards = newBlockchain.MiningRewards
+	bc.TotalRewards = newBlockchain.TotalRewards
 	return nil
 }
 
