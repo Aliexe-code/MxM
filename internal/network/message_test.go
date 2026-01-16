@@ -2,6 +2,10 @@ package network
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/binary"
 	"testing"
 )
@@ -467,5 +471,135 @@ func TestMessageToJSON(t *testing.T) {
 
 	if jsonStr[0] != '{' {
 		t.Error("JSON should start with '{'")
+	}
+}
+
+func TestNewAuthenticatedMessage(t *testing.T) {
+	payload := []byte("test payload")
+	signature := []byte("test signature")
+	nodeID := "node-123"
+
+	msg := NewAuthenticatedMessage(MessageTypePing, payload, signature, nodeID)
+
+	if msg.Type != MessageTypePing {
+		t.Errorf("Expected type MessageTypePing, got %v", msg.Type)
+	}
+
+	if !bytes.Equal(msg.Signature, signature) {
+		t.Error("Signature should match")
+	}
+
+	if msg.NodeID != nodeID {
+		t.Errorf("Expected nodeID %s, got %s", nodeID, msg.NodeID)
+	}
+
+	if !msg.IsAuthenticated() {
+		t.Error("Message should be authenticated")
+	}
+}
+
+func TestMessageVerifySignature(t *testing.T) {
+	payload := []byte("test payload")
+	msg := NewMessage(MessageTypePing, payload)
+
+	// Test verification without signature
+	if msg.VerifySignature(nil) {
+		t.Error("Should fail verification without signature")
+	}
+
+	// Test with empty signature
+	msg.Signature = []byte{}
+	if msg.VerifySignature(nil) {
+		t.Error("Should fail verification with empty signature")
+	}
+}
+
+func TestMessageSign(t *testing.T) {
+	payload := []byte("test payload")
+	msg := NewMessage(MessageTypePing, payload)
+
+	// Generate a real ECDSA private key for testing
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate private key: %v", err)
+	}
+
+	// Test signing
+	err = msg.Sign(privateKey)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	// Verify signature was added
+	if len(msg.Signature) == 0 {
+		t.Error("Expected signature to be added")
+	}
+
+	// Verify the signature works
+	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("Failed to marshal public key: %v", err)
+	}
+
+	if !msg.VerifySignature(publicKeyBytes) {
+		t.Error("Signature verification failed")
+	}
+}
+
+func TestMessageIsAuthenticated(t *testing.T) {
+	// Test unauthenticated message
+	msg1 := NewMessage(MessageTypePing, []byte("test"))
+	if msg1.IsAuthenticated() {
+		t.Error("Message should not be authenticated")
+	}
+
+	// Test authenticated message
+	msg2 := NewAuthenticatedMessage(
+		MessageTypePing,
+		[]byte("test"),
+		[]byte("signature"),
+		"node-123",
+	)
+	if !msg2.IsAuthenticated() {
+		t.Error("Message should be authenticated")
+	}
+}
+
+func TestMessageFragment(t *testing.T) {
+	// Create a large message
+	largePayload := make([]byte, 100000)
+	for i := range largePayload {
+		largePayload[i] = byte(i % 256)
+	}
+
+	msg := NewMessage(MessageTypeNewBlock, largePayload)
+
+	// Fragment the message
+	fragments, err := msg.Fragment()
+	if err != nil {
+		t.Fatalf("Failed to fragment message: %v", err)
+	}
+
+	if len(fragments) == 0 {
+		t.Error("Expected fragments to be created")
+	}
+
+	if len(fragments) < 2 {
+		t.Error("Expected at least 2 fragments for large payload")
+	}
+
+	// Verify fragment properties
+	for i, frag := range fragments {
+		if !frag.IsFragment {
+			t.Errorf("Fragment %d should be marked as fragment", i)
+		}
+
+		if frag.FragmentIndex != uint16(i) {
+			t.Errorf("Fragment %d should have index %d", i, i)
+		}
+
+		if frag.TotalFragments != uint32(len(fragments)) {
+			t.Errorf("Fragment %d should have total %d", i, len(fragments))
+		}
 	}
 }

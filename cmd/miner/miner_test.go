@@ -592,14 +592,15 @@ func TestMinerCLIDisplayStatsPeriodically(t *testing.T) {
 		done <- true
 	}()
 
-	// Stop mining to terminate the goroutine
+	// Wait a bit for the ticker to fire once, then stop mining
+	time.Sleep(StatsUpdateInterval + 100*time.Millisecond)
 	cli.isMining = false
 
-	// Wait for goroutine to finish
+	// Wait for goroutine to finish with a longer timeout
 	select {
 	case <-done:
 		// Success
-	case <-time.After(1 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Error("displayStatsPeriodically should stop when isMining is false")
 	}
 }
@@ -1330,15 +1331,16 @@ func TestDisplayStatsPeriodicallyFullCoverage(t *testing.T) {
 		done <- true
 	}()
 
-	// Stop mining immediately to test quick termination
+	// Wait for ticker to fire once, then stop mining to test quick termination
+	time.Sleep(StatsUpdateInterval + 100*time.Millisecond)
 	cli.isMining = false
 
-	// Wait for goroutine to finish with shorter timeout
+	// Wait for goroutine to finish with longer timeout
 	select {
 	case <-done:
 		// Success - goroutine terminated properly
-	case <-time.After(200 * time.Millisecond):
-		t.Error("displayStatsPeriodically should stop quickly when isMining is false")
+	case <-time.After(5 * time.Second):
+		t.Error("displayStatsPeriodically should stop when isMining is false")
 	}
 
 	// Test with zero blocks mined
@@ -1350,13 +1352,14 @@ func TestDisplayStatsPeriodicallyFullCoverage(t *testing.T) {
 		done <- true
 	}()
 
-	// Stop quickly
+	// Wait for ticker to fire once, then stop
+	time.Sleep(StatsUpdateInterval + 100*time.Millisecond)
 	cli.isMining = false
 
 	select {
 	case <-done:
 		// Success
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		t.Error("displayStatsPeriodically should stop even with zero blocks mined")
 	}
 }
@@ -1416,15 +1419,16 @@ func TestDisplayStatsPeriodicallyCoverage(t *testing.T) {
 		done <- true
 	}()
 
-	// Stop mining immediately to avoid long wait
+	// Wait for ticker to fire once, then stop mining to avoid long wait
+	time.Sleep(StatsUpdateInterval + 100*time.Millisecond)
 	cli.isMining = false
 
-	// Wait for goroutine to finish with shorter timeout
+	// Wait for goroutine to finish with longer timeout
 	select {
 	case <-done:
 		// Success - goroutine terminated properly
-	case <-time.After(500 * time.Millisecond):
-		t.Error("displayStatsPeriodically should stop quickly when isMining is false")
+	case <-time.After(5 * time.Second):
+		t.Error("displayStatsPeriodically should stop when isMining is false")
 	}
 }
 

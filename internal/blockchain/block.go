@@ -62,8 +62,6 @@ func (b *Block) MineBlock(difficulty int) time.Duration {
 	if hash != nil {
 		b.Nonce = nonce
 		b.Hash = hash
-	} else {
-		fmt.Printf("Failed to mine Block: %s\n", string(b.Data))
 	}
 	return duration
 }

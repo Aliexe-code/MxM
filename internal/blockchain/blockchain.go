@@ -251,10 +251,21 @@ func (bc *Blockchain) IsValidWithUTXO(utxoSet interface{}) bool {
 	if _, ok := utxoSet.(UTXOValidator); ok {
 		// Clone the UTXO set to avoid modifying the original
 		// and validate each transaction in order
-		for range bc.Blocks {
-			// Note: This is a placeholder for transaction validation
-			// The actual implementation depends on how transactions are stored in blocks
-			// For now, we return true if basic validation passes
+		// Note: Currently blocks store data as bytes, not structured transactions
+		// Full transaction validation will require Block struct refactoring
+		// For now, we validate that data is not corrupted and has proper structure
+
+		// Validate that all blocks have valid data
+		for i, block := range bc.Blocks {
+			if len(block.Data) == 0 && i > 0 {
+				// Only genesis block can have empty data
+				return false
+			}
+
+			// Validate data integrity (basic check)
+			if !bytes.Equal(block.Hash, block.CalculateHash()) {
+				return false
+			}
 		}
 	}
 
@@ -309,14 +320,16 @@ func calculateBlockWork(difficulty int) float64 {
 // ResolveFork resolves a blockchain fork by comparing total work
 // Returns error if the other chain should replace this one
 func (bc *Blockchain) ResolveFork(other *Blockchain) error {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-
-	// Find common ancestor
+	// Find common ancestor without holding lock to prevent deadlock
+	// (FindCommonAncestor acquires locks on both chains)
 	commonIndex := bc.FindCommonAncestor(other)
 	if commonIndex == -1 {
 		return fmt.Errorf("no common ancestor found, cannot resolve fork")
 	}
+
+	// Now acquire lock for the rest of the operation
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
 
 	// Calculate total work for both chains from the common ancestor
 	myWork := bc.calculateTotalWorkLocked(commonIndex)

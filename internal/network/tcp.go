@@ -290,11 +290,12 @@ type Server struct {
 	maxPeers    int
 	rateLimiter map[string]time.Time
 	rateMu      sync.RWMutex
+	cleanupDone chan struct{}
 }
 
 // NewServer creates a new TCP server
 func NewServer(address string, port int, handler MessageHandler) *Server {
-	return &Server{
+	s := &Server{
 		address:     address,
 		port:        port,
 		peers:       make(map[string]*Peer),
@@ -302,7 +303,11 @@ func NewServer(address string, port int, handler MessageHandler) *Server {
 		closeChan:   make(chan struct{}),
 		maxPeers:    100,
 		rateLimiter: make(map[string]time.Time),
+		cleanupDone: make(chan struct{}),
 	}
+	// Start rate limiter cleanup goroutine
+	go s.rateLimiterCleanup()
+	return s
 }
 
 // Start starts the server
@@ -321,6 +326,29 @@ func (s *Server) Start() error {
 	return nil
 }
 
+// rateLimiterCleanup periodically cleans up old rate limiting entries
+func (s *Server) rateLimiterCleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	defer close(s.cleanupDone)
+
+	for {
+		select {
+		case <-ticker.C:
+			s.rateMu.Lock()
+			cutoff := time.Now().Add(-5 * time.Minute)
+			for key, timestamp := range s.rateLimiter {
+				if timestamp.Before(cutoff) {
+					delete(s.rateLimiter, key)
+				}
+			}
+			s.rateMu.Unlock()
+		case <-s.closeChan:
+			return
+		}
+	}
+}
+
 // Stop stops the server
 func (s *Server) Stop() error {
 	close(s.closeChan)
@@ -336,6 +364,9 @@ func (s *Server) Stop() error {
 		peer.Close()
 	}
 	s.peersMu.Unlock()
+
+	// Wait for rate limiter cleanup to finish
+	<-s.cleanupDone
 
 	return nil
 }
@@ -411,10 +442,21 @@ func (s *Server) handleConnection(conn net.Conn) {
 	fmt.Printf("New peer connected: %s (%s)\n", peerID, conn.RemoteAddr())
 }
 
-// Broadcast sends a message to all connected peers
+// Broadcast sends a message to all connected peers with rate limiting
 func (s *Server) Broadcast(msg *Message) {
 	s.peersMu.RLock()
 	defer s.peersMu.RUnlock()
+
+	// Check rate limit for this message type
+	msgTypeStr := msg.Type.String()
+	s.rateMu.Lock()
+	lastBroadcast, exists := s.rateLimiter[msgTypeStr]
+	if exists && time.Since(lastBroadcast) < 100*time.Millisecond {
+		s.rateMu.Unlock()
+		return // Rate limited
+	}
+	s.rateLimiter[msgTypeStr] = time.Now()
+	s.rateMu.Unlock()
 
 	for _, peer := range s.peers {
 		if peer.IsConnected() {

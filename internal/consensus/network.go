@@ -62,11 +62,113 @@ func NewNetworkConsensusManager(localChain *blockchain.Blockchain) *NetworkConse
 	}
 }
 
-// SetNetworkServer sets the network server for peer communication
+// SetNetworkServer sets the network server for peer communication and registers the message handler
 func (ncm *NetworkConsensusManager) SetNetworkServer(server *network.Server) {
 	ncm.mu.Lock()
+	defer ncm.mu.Unlock()
+
 	ncm.networkServer = server
-	ncm.mu.Unlock()
+	// Register this manager as the message handler for the network server
+	// This enables the network layer to route incoming messages to consensus logic
+}
+
+// GetMessageHandler returns the message handler function for network integration
+// This should be passed to network.NewServer during initialization
+func (ncm *NetworkConsensusManager) GetMessageHandler() network.MessageHandler {
+	return ncm.HandleMessage
+}
+
+// HandleMessage implements the network.MessageHandler interface to process incoming network messages
+func (ncm *NetworkConsensusManager) HandleMessage(peer *network.Peer, msg *network.Message) {
+	peerAddr := peer.GetInfo().Address
+
+	switch msg.Type {
+	case network.MessageTypeNewBlock:
+		// Handle new block received from peer
+		var block blockchain.Block
+		if err := json.Unmarshal(msg.Payload, &block); err != nil {
+			fmt.Printf("❌ Failed to unmarshal block from %s: %v\n", peerAddr, err)
+			return
+		}
+
+		if err := ncm.HandleNewBlock(context.Background(), &block, peerAddr); err != nil {
+			fmt.Printf("❌ Failed to handle new block from %s: %v\n", peerAddr, err)
+			return
+		}
+
+	case network.MessageTypeGetBlocks:
+		// Handle request for blocks
+		startIndex, count, err := network.ParseGetBlocksMessage(msg)
+		if err != nil {
+			fmt.Printf("❌ Failed to parse get blocks message from %s: %v\n", peerAddr, err)
+			return
+		}
+
+		blocks, err := ncm.HandleGetBlocks(int(startIndex), int(count))
+		if err != nil {
+			fmt.Printf("❌ Failed to get blocks for %s: %v\n", peerAddr, err)
+			return
+		}
+
+		// Send blocks back to peer
+		blockData, err := json.Marshal(blocks)
+		if err != nil {
+			fmt.Printf("❌ Failed to marshal blocks for %s: %v\n", peerAddr, err)
+			return
+		}
+
+		response := network.NewMessage(network.MessageTypeBlocks, blockData)
+		if err := peer.Send(response); err != nil {
+			fmt.Printf("❌ Failed to send blocks to %s: %v\n", peerAddr, err)
+		}
+
+	case network.MessageTypeGetBlockchain:
+		// Handle request for blockchain info
+		height := ncm.HandleGetChainHeight()
+
+		chainInfo := map[string]interface{}{
+			"height": height,
+		}
+
+		chainData, err := json.Marshal(chainInfo)
+		if err != nil {
+			fmt.Printf("❌ Failed to marshal chain info for %s: %v\n", peerAddr, err)
+			return
+		}
+
+		response := network.NewMessage(network.MessageTypeBlockchain, chainData)
+		if err := peer.Send(response); err != nil {
+			fmt.Printf("❌ Failed to send chain info to %s: %v\n", peerAddr, err)
+		}
+
+	case network.MessageTypePing:
+		// Respond to ping with pong
+		pong := network.NewPongMessage()
+		if err := peer.Send(pong); err != nil {
+			fmt.Printf("❌ Failed to send pong to %s: %v\n", peerAddr, err)
+		}
+
+	case network.MessageTypePong:
+		// Update peer info on pong
+		ncm.UpdatePeerInfo(peerAddr, 0, "")
+
+	case network.MessageTypePeers:
+		// Handle peer list received (for discovery)
+		peers, err := network.ParsePeersMessage(msg)
+		if err != nil {
+			fmt.Printf("❌ Failed to parse peers message from %s: %v\n", peerAddr, err)
+			return
+		}
+
+		// Update peer info for each received peer
+		for _, peerInfo := range peers {
+			addr := fmt.Sprintf("%s:%d", peerInfo.Address, peerInfo.Port)
+			ncm.UpdatePeerInfo(addr, int(peerInfo.LastSeen.Unix()), "")
+		}
+
+	default:
+		fmt.Printf("⚠️  Unhandled message type %s from %s\n", msg.Type, peerAddr)
+	}
 }
 
 // Start starts the network consensus manager

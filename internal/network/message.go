@@ -2,7 +2,12 @@ package network
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -285,30 +290,65 @@ func (m *Message) Validate() error {
 }
 
 // VerifySignature verifies the message signature using a public key
-// This is a placeholder - actual implementation would depend on the crypto library used
 func (m *Message) VerifySignature(publicKey []byte) bool {
-	// Placeholder for signature verification
-	// In a real implementation, this would:
-	// 1. Create a message to sign (version + type + payload)
-	// 2. Verify the signature using the public key
-	// 3. Return true if signature is valid, false otherwise
+	if len(publicKey) == 0 || len(m.Signature) == 0 {
+		return false
+	}
 
-	// For now, we'll just check if a signature exists
-	return len(m.Signature) > 0
+	// Parse the public key
+	pubKey, err := x509.ParsePKIXPublicKey(publicKey)
+	if err != nil {
+		return false
+	}
+
+	ecdsaPubKey, ok := pubKey.(*ecdsa.PublicKey)
+	if !ok {
+		return false
+	}
+
+	// Create the message to sign
+	message := m.createSigningMessage()
+
+	// Decode the signature
+	signature, err := hex.DecodeString(string(m.Signature))
+	if err != nil {
+		return false
+	}
+
+	// Verify the signature
+	return ecdsa.VerifyASN1(ecdsaPubKey, message, signature)
 }
 
 // Sign signs the message using a private key
-// This is a placeholder - actual implementation would depend on the crypto library used
-func (m *Message) Sign(privateKey []byte) error {
-	// Placeholder for message signing
-	// In a real implementation, this would:
-	// 1. Create a message to sign (version + type + payload)
-	// 2. Sign the message using the private key
-	// 3. Store the signature in m.Signature
+func (m *Message) Sign(privateKey *ecdsa.PrivateKey) error {
+	if privateKey == nil {
+		return errors.New("private key is nil")
+	}
 
-	// For now, we'll just create a dummy signature
-	m.Signature = []byte("signed")
+	// Create the message to sign
+	message := m.createSigningMessage()
+
+	// Sign the message
+	signature, err := ecdsa.SignASN1(rand.Reader, privateKey, message)
+	if err != nil {
+		return fmt.Errorf("failed to sign message: %w", err)
+	}
+
+	// Store the signature as hex string
+	m.Signature = []byte(hex.EncodeToString(signature))
 	return nil
+}
+
+// createSigningMessage creates the message to be signed
+func (m *Message) createSigningMessage() []byte {
+	// Hash the message components (version + type + payload + checksum)
+	hash := sha256.New()
+	hash.Write([]byte{m.Version})
+	hash.Write([]byte{uint8(m.Type)})
+	hash.Write(m.Payload)
+	binary.Write(hash, binary.BigEndian, m.Checksum)
+
+	return hash.Sum(nil)
 }
 
 // IsAuthenticated checks if the message has authentication

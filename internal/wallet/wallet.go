@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/pbkdf2"
+	"golang.org/x/crypto/argon2"
 
 	"github.com/aliexe/blockChain/internal/crypto"
 	"github.com/aliexe/blockChain/internal/transactions"
@@ -650,11 +650,16 @@ func decryptData(encryptedData []byte, passphrase string, encryptionData *Encryp
 	return data, nil
 }
 
-// deriveKey derives an encryption key from passphrase using PBKDF2
+// deriveKey derives an encryption key from passphrase using Argon2id
 func deriveKey(passphrase string, salt []byte) []byte {
-	// Use PBKDF2 with 100,000 iterations for proper key stretching
-	// This provides protection against brute-force attacks
-	return pbkdf2.Key([]byte(passphrase), salt, 100000, 32, sha256.New)
+	// Use Argon2id with recommended parameters for 2026 security standards
+	// This provides better protection against brute-force and GPU attacks than PBKDF2
+	// Parameters:
+	// - time: 3 iterations (CPU cost)
+	// - memory: 64MB (memory cost)
+	// - threads: 4 (parallelism)
+	// - key length: 32 bytes (256 bits)
+	return argon2.IDKey([]byte(passphrase), salt, 3, 64*1024, 4, 32)
 }
 
 // SignTransaction signs a transaction using the appropriate wallet key

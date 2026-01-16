@@ -23,6 +23,12 @@ const (
 	DefaultDBPath  = "./data/blockchain.db"
 )
 
+// handleError handles errors by printing to stderr and exiting with error code
+func (cli *StorageCLI) handleError(message string, err error) {
+	fmt.Fprintf(os.Stderr, "❌ %s: %v\n", message, err)
+	os.Exit(1)
+}
+
 func main() {
 	cli := &StorageCLI{
 		dataDir: DefaultDataDir,

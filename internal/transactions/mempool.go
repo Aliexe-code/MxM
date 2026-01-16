@@ -45,6 +45,7 @@ type Mempool struct {
 	transactions  map[string]*MempoolEntry // txID -> entry
 	byAddress     map[string][]string      // address -> []txID
 	priorityQueue *PriorityQueue
+	removedEntries map[string]bool         // track removed entries in priority queue
 	mu            sync.RWMutex
 	cleanupTicker *time.Ticker
 	cleanupStop   chan struct{}
@@ -59,13 +60,14 @@ func NewMempool() *Mempool {
 // NewMempoolWithConfig creates a new mempool with custom configuration
 func NewMempoolWithConfig(config MempoolConfig) *Mempool {
 	mp := &Mempool{
-		config:        config,
-		transactions:  make(map[string]*MempoolEntry),
-		byAddress:     make(map[string][]string),
-		priorityQueue: &PriorityQueue{},
-		cleanupTicker: time.NewTicker(config.CleanupInterval),
-		cleanupStop:   make(chan struct{}),
-		running:       false,
+		config:         config,
+		transactions:   make(map[string]*MempoolEntry),
+		byAddress:      make(map[string][]string),
+		priorityQueue:  &PriorityQueue{},
+		removedEntries: make(map[string]bool),
+		cleanupTicker:  time.NewTicker(config.CleanupInterval),
+		cleanupStop:    make(chan struct{}),
+		running:        false,
 	}
 	heap.Init(mp.priorityQueue)
 	return mp
@@ -203,7 +205,7 @@ func (mp *Mempool) RemoveTransaction(txID string) bool {
 	mp.mu.Lock()
 	defer mp.mu.Unlock()
 
-	entry, exists := mp.transactions[txID]
+	_, exists := mp.transactions[txID]
 	if !exists {
 		return false
 	}
@@ -226,8 +228,8 @@ func (mp *Mempool) RemoveTransaction(txID string) bool {
 		}
 	}
 
-	// Remove from priority queue (mark as removed)
-	entry.Priority = -1 // Mark as removed
+	// Mark entry as removed in priority queue tracking
+	mp.removedEntries[txID] = true
 
 	return true
 }
@@ -408,6 +410,7 @@ func (mp *Mempool) Clear() {
 
 	mp.transactions = make(map[string]*MempoolEntry)
 	mp.byAddress = make(map[string][]string)
+	mp.removedEntries = make(map[string]bool)
 	mp.priorityQueue = &PriorityQueue{}
 	heap.Init(mp.priorityQueue)
 }
@@ -435,13 +438,23 @@ func (mp *Mempool) calculatePriority(tx *Transaction, feeRate float64) int64 {
 
 // evictLowestPriority removes the lowest priority transaction
 func (mp *Mempool) evictLowestPriority() error {
-	if mp.priorityQueue.Len() == 0 {
-		return fmt.Errorf("no transactions to evict")
+	// Pop and skip removed entries until we find a valid one or queue is empty
+	for mp.priorityQueue.Len() > 0 {
+		entry := heap.Pop(mp.priorityQueue).(*MempoolEntry)
+		txID := entry.Transaction.ID
+
+		// Skip if this entry has been removed
+		if mp.removedEntries[txID] {
+			delete(mp.removedEntries, txID)
+			continue
+		}
+
+		// Found a valid entry to evict
+		delete(mp.transactions, txID)
+		return nil
 	}
 
-	entry := heap.Pop(mp.priorityQueue).(*MempoolEntry)
-	delete(mp.transactions, entry.Transaction.ID)
-	return nil
+	return fmt.Errorf("no valid transactions to evict")
 }
 
 // cleanupOldTransactions removes transactions older than MaxAge

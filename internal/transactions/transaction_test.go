@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"log"
 	"math"
 	"strings"
 	"testing"
@@ -25,7 +26,7 @@ func init() {
 	var err error
 	testPrivateKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		panic("Failed to generate test key")
+		log.Fatalf("Failed to generate test key: %v", err)
 	}
 	testPublicKey = &testPrivateKey.PublicKey
 }

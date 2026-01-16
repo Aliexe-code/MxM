@@ -158,16 +158,38 @@ func (cr *ConsensusRules) CalculateNewDifficulty(bc *blockchain.Blockchain) (int
 	avgBlockTime := totalTime / time.Duration(cr.AdjustmentInterval-1)
 	currentDifficulty := recentBlocks[len(recentBlocks)-1].Difficulty
 
-	// Adjust difficulty based on average block time
-	newDifficulty := currentDifficulty
+	// Calculate deviation percentage from target
+	deviation := float64(avgBlockTime) / float64(cr.TargetBlockTime)
 
-	if avgBlockTime > cr.TargetBlockTime*2 {
-		// Blocks are too slow, decrease difficulty
-		newDifficulty = rulesMax(cr.MinDifficulty, currentDifficulty-1)
-	} else if avgBlockTime < cr.TargetBlockTime/2 {
-		// Blocks are too fast, increase difficulty
-		newDifficulty = rulesMin(cr.MaxDifficulty, currentDifficulty+1)
+	// Proportional difficulty adjustment
+	// If blocks are too fast (deviation < 1.0), increase difficulty
+	// If blocks are too slow (deviation > 1.0), decrease difficulty
+	// The adjustment is proportional to the deviation
+	adjustment := 0
+
+	switch {
+	case deviation < 0.5:
+		// Blocks are significantly too fast, increase by 2
+		adjustment = 2
+	case deviation < 0.75:
+		// Blocks are moderately too fast, increase by 1
+		adjustment = 1
+	case deviation < 1.25:
+		// Within tolerance range, no change
+		adjustment = 0
+	case deviation < 1.5:
+		// Blocks are moderately too slow, decrease by 1
+		adjustment = -1
+	default:
+		// Blocks are significantly too slow, decrease by 2
+		adjustment = -2
 	}
+
+	newDifficulty := currentDifficulty + adjustment
+
+	// Clamp to min/max bounds
+	newDifficulty = rulesMax(cr.MinDifficulty, newDifficulty)
+	newDifficulty = rulesMin(cr.MaxDifficulty, newDifficulty)
 
 	return newDifficulty, nil
 }

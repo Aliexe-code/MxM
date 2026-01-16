@@ -12,6 +12,20 @@ import (
 
 const storageBinary = "/tmp/storage-test"
 
+func TestMain(m *testing.M) {
+	// Build the storage binary before running tests
+	buildCmd := exec.Command("go", "build", "-o", storageBinary, ".")
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		os.Stderr.WriteString("Failed to build storage binary: " + err.Error() + "\n")
+		os.Stderr.WriteString("Output: " + string(output) + "\n")
+		os.Exit(1)
+	}
+	defer os.Remove(storageBinary)
+
+	// Run tests
+	os.Exit(m.Run())
+}
+
 func TestStorageCLIHelp(t *testing.T) {
 	cmd := exec.Command(storageBinary, "help")
 	output, err := cmd.CombinedOutput()

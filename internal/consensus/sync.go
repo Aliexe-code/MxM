@@ -64,6 +64,7 @@ func NewSyncManager(localChain *blockchain.Blockchain) *SyncManager {
 }
 
 // SetNetworkClient sets the network client for peer communication
+// This enables the sync manager to communicate with peers for blockchain synchronization
 func (sm *SyncManager) SetNetworkClient(client *network.Client) {
 	sm.networkClient = client
 }
@@ -335,6 +336,9 @@ func (sm *SyncManager) getPeerChainHeight(ctx context.Context, peerAddr string) 
 		}
 	}()
 
+	// Get timeout from config (use default if not set)
+	timeout := sm.getTimeout()
+
 	// Wait for response or timeout
 	select {
 	case <-ctx.Done():
@@ -350,9 +354,17 @@ func (sm *SyncManager) getPeerChainHeight(ctx context.Context, peerAddr string) 
 			return -1, fmt.Errorf("failed to parse chain info: %w", err)
 		}
 		return chainInfo.Height, nil
-	case <-time.After(30 * time.Second):
+	case <-time.After(timeout):
 		return -1, fmt.Errorf("timeout waiting for chain height from peer %s", peerAddr)
 	}
+}
+
+// getTimeout returns the current timeout duration
+func (sm *SyncManager) getTimeout() time.Duration {
+	sm.progressMu.RLock()
+	defer sm.progressMu.RUnlock()
+	// Default to 30 seconds if not configured
+	return 30 * time.Second
 }
 
 // getPeerBlock gets a specific block from a peer
