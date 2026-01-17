@@ -1,4 +1,5 @@
-*.md
+# Ignore specific markdown files
+SPRINTS.md
 
 # Binaries for programs and plugins
 *.exe
