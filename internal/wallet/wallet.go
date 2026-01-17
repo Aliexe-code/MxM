@@ -13,39 +13,41 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/argon2"
+
 	"github.com/aliexe/blockChain/internal/crypto"
 	"github.com/aliexe/blockChain/internal/transactions"
 )
 
 // Wallet represents a cryptocurrency wallet
 type Wallet struct {
-	Name         string                    `json:"name"`
-	CreatedAt    time.Time                 `json:"created_at"`
-	UpdatedAt    time.Time                 `json:"updated_at"`
-	KeyPairs     map[string]*crypto.KeyPair `json:"-"` // Don't serialize private keys directly
-	Addresses    []string                  `json:"addresses"`
-	Encrypted    bool                      `json:"encrypted"`
-	Metadata     map[string]string         `json:"metadata"`
-	mu           sync.RWMutex             `json:"-"`
+	Name      string                     `json:"name"`
+	CreatedAt time.Time                  `json:"created_at"`
+	UpdatedAt time.Time                  `json:"updated_at"`
+	KeyPairs  map[string]*crypto.KeyPair `json:"-"` // Don't serialize private keys directly
+	Addresses []string                   `json:"addresses"`
+	Encrypted bool                       `json:"encrypted"`
+	Metadata  map[string]string          `json:"metadata"`
+	mu        sync.RWMutex               `json:"-"`
 }
 
 // WalletStorage represents the serialized wallet format
 type WalletStorage struct {
-	Name         string            `json:"name"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	KeyStores    []*crypto.KeyStorage `json:"key_stores"`
-	Addresses    []string          `json:"addresses"`
-	Encrypted    bool              `json:"encrypted"`
-	EncryptionData *EncryptionData `json:"encryption_data,omitempty"`
-	Metadata     map[string]string `json:"metadata"`
+	Name           string               `json:"name"`
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
+	KeyStores      []*crypto.KeyStorage `json:"key_stores"`
+	Addresses      []string             `json:"addresses"`
+	Encrypted      bool                 `json:"encrypted"`
+	EncryptionData *EncryptionData      `json:"encryption_data,omitempty"`
+	Metadata       map[string]string    `json:"metadata"`
 }
 
 // EncryptionData contains encryption metadata
 type EncryptionData struct {
-	Salt        string `json:"salt"`
-	Nonce       string `json:"nonce"`
-	Checksum    string `json:"checksum"`
+	Salt     string `json:"salt"`
+	Nonce    string `json:"nonce"`
+	Checksum string `json:"checksum"`
 }
 
 // WalletConfig contains wallet creation options
@@ -164,17 +166,18 @@ func (w *Wallet) CalculateBalance(utxoSet map[string]map[int]transactions.TxOutp
 
 	for _, address := range w.Addresses {
 		// Find all UTXOs for this address
-			for _, outputs := range utxoSet {
-				for _, output := range outputs {
-					// Check if this output belongs to our wallet address
-					if output.Address == address {
-						// Check if this UTXO is still unspent
-						// In a real implementation, we'd need to check if this output has been spent
-						// For now, we'll assume all outputs in the UTXO set are unspent
-						totalBalance += output.Amount
-					}
+		for _, outputs := range utxoSet {
+			for _, output := range outputs {
+				// Check if this output belongs to our wallet address
+				if output.Address == address {
+					// Check if this UTXO is still unspent
+					// In a real implementation, we'd need to check if this output has been spent
+					// For now, we'll assume all outputs in the UTXO set are unspent
+					totalBalance += output.Amount
 				}
-			}	}
+			}
+		}
+	}
 
 	return totalBalance, nil
 }
@@ -535,7 +538,7 @@ func (w *Wallet) Validate() error {
 	if !w.Encrypted {
 		// Validate key pairs for unencrypted wallets
 		if len(w.KeyPairs) != len(w.Addresses) {
-			return fmt.Errorf("key pair count (%d) doesn't match address count (%d)", 
+			return fmt.Errorf("key pair count (%d) doesn't match address count (%d)",
 				len(w.KeyPairs), len(w.Addresses))
 		}
 
@@ -544,7 +547,7 @@ func (w *Wallet) Validate() error {
 				return fmt.Errorf("invalid key pair for address: %s", address)
 			}
 			if keyPair.Address != address {
-				return fmt.Errorf("key pair address mismatch: expected %s, got %s", 
+				return fmt.Errorf("key pair address mismatch: expected %s, got %s",
 					address, keyPair.Address)
 			}
 		}
@@ -647,10 +650,16 @@ func decryptData(encryptedData []byte, passphrase string, encryptionData *Encryp
 	return data, nil
 }
 
-// deriveKey derives an encryption key from passphrase using PBKDF2
+// deriveKey derives an encryption key from passphrase using Argon2id
 func deriveKey(passphrase string, salt []byte) []byte {
-	hash := sha256.Sum256([]byte(passphrase + string(salt)))
-	return hash[:]
+	// Use Argon2id with recommended parameters for 2026 security standards
+	// This provides better protection against brute-force and GPU attacks than PBKDF2
+	// Parameters:
+	// - time: 3 iterations (CPU cost)
+	// - memory: 64MB (memory cost)
+	// - threads: 4 (parallelism)
+	// - key length: 32 bytes (256 bits)
+	return argon2.IDKey([]byte(passphrase), salt, 3, 64*1024, 4, 32)
 }
 
 // SignTransaction signs a transaction using the appropriate wallet key

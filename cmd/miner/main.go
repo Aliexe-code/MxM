@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,19 +21,20 @@ type MinerCLI struct {
 	minerID    string
 	difficulty int
 	stats      *MiningStats
+	statsMu    sync.RWMutex
 }
 
 type MiningStats struct {
-	BlocksMined    int
-	TotalRewards   float64
-	StartTime      time.Time
-	LastBlockTime  time.Time
-	AverageTime    time.Duration
+	BlocksMined   int
+	TotalRewards  float64
+	StartTime     time.Time
+	LastBlockTime time.Time
+	AverageTime   time.Duration
 }
 
 const (
-	DefaultMinerID    = "default-miner"
-	DefaultDifficulty = 2
+	DefaultMinerID      = "default-miner"
+	DefaultDifficulty   = 2
 	StatsUpdateInterval = 5 * time.Second
 )
 
@@ -46,7 +48,7 @@ func main() {
 	// Parse command line flags
 	flag.StringVar(&cli.minerID, "miner", DefaultMinerID, "Miner identifier")
 	flag.IntVar(&cli.difficulty, "difficulty", DefaultDifficulty, "Mining difficulty (1-8)")
-	
+
 	flag.Parse()
 
 	if len(flag.Args()) == 0 {
@@ -110,7 +112,7 @@ func (cli *MinerCLI) startMining() {
 	cli.bc = blockchain.NewBlockchain()
 	cli.isMining = true
 	cli.stats.StartTime = time.Now()
-	
+
 	fmt.Printf("🚀 Starting mining with difficulty %d for miner %s\n", cli.difficulty, cli.minerID)
 	fmt.Println("Press Ctrl+C to stop mining...")
 
@@ -131,9 +133,9 @@ func (cli *MinerCLI) startMining() {
 		default:
 			// Mine a new block
 			blockData := fmt.Sprintf("Block #%d mined by %s", blockCount+1, cli.minerID)
-			
+
 			duration, err := cli.bc.AddBlockWithMining(blockData, cli.minerID, cli.difficulty)
-			
+
 			if err != nil {
 				log.Printf("❌ Error mining block: %v", err)
 				continue
@@ -158,10 +160,10 @@ func (cli *MinerCLI) stopMining() {
 		fmt.Println("⚠️  Mining is not running")
 		return
 	}
-	
+
 	cli.isMining = false
 	fmt.Println("\n🛑 Mining stopped")
-	
+
 	if cli.stats.BlocksMined > 0 {
 		cli.showMiningSummary()
 	}
@@ -169,15 +171,21 @@ func (cli *MinerCLI) stopMining() {
 
 func (cli *MinerCLI) showStatus() {
 	if cli.isMining {
+		cli.statsMu.RLock()
 		uptime := time.Since(cli.stats.StartTime)
+		blocksMined := cli.stats.BlocksMined
+		totalRewards := cli.stats.TotalRewards
+		averageTime := cli.stats.AverageTime
+		cli.statsMu.RUnlock()
+
 		fmt.Printf("🔥 Mining Status: ACTIVE\n")
 		fmt.Printf("⛏️  Miner: %s\n", cli.minerID)
 		fmt.Printf("🎯 Difficulty: %d\n", cli.difficulty)
 		fmt.Printf("⏱️  Uptime: %v\n", uptime.Round(time.Second))
-		fmt.Printf("📊 Blocks Mined: %d\n", cli.stats.BlocksMined)
-		fmt.Printf("💰 Total Rewards: %.2f\n", cli.stats.TotalRewards)
-		if cli.stats.AverageTime > 0 {
-			fmt.Printf("⚡ Average Block Time: %v\n", cli.stats.AverageTime.Round(time.Millisecond))
+		fmt.Printf("📊 Blocks Mined: %d\n", blocksMined)
+		fmt.Printf("💰 Total Rewards: %.2f\n", totalRewards)
+		if averageTime > 0 {
+			fmt.Printf("⚡ Average Block Time: %v\n", averageTime.Round(time.Millisecond))
 		}
 	} else {
 		fmt.Println("🔥 Mining Status: STOPPED")
@@ -191,15 +199,15 @@ func (cli *MinerCLI) showDetailedStats() {
 	}
 
 	stats := cli.bc.GetMiningStats()
-	
+
 	fmt.Println("📊 Detailed Mining Statistics")
 	fmt.Println("============================")
-	
+
 	// Blockchain stats
 	fmt.Printf("📦 Total Blocks: %v\n", stats["total_blocks"])
 	fmt.Printf("💰 Total Rewards: %.2f\n", stats["total_rewards"].(float64))
 	fmt.Printf("🏆 Reward Count: %v\n", stats["reward_count"])
-	
+
 	// Miner stats
 	if minerRewards, ok := stats["miner_rewards"].(map[string]float64); ok {
 		fmt.Println("\n👥 Miner Rewards:")
@@ -207,7 +215,7 @@ func (cli *MinerCLI) showDetailedStats() {
 			fmt.Printf("  💎 %s: %.2f\n", miner, reward)
 		}
 	}
-	
+
 	if minerBlocks, ok := stats["miner_blocks"].(map[string]int); ok {
 		fmt.Println("\n🏗️  Miner Block Counts:")
 		for miner, blocks := range minerBlocks {
@@ -236,47 +244,57 @@ func (cli *MinerCLI) setDifficulty() {
 
 	cli.difficulty = newDifficulty
 	fmt.Printf("✅ Mining difficulty set to %d\n", newDifficulty)
-	
+
 	if cli.isMining {
 		fmt.Printf("⚠️  New difficulty will apply to the next block\n")
 	}
 }
 
 func (cli *MinerCLI) updateStats(duration time.Duration) {
+	cli.statsMu.Lock()
+	defer cli.statsMu.Unlock()
+
 	cli.stats.BlocksMined++
 	cli.stats.LastBlockTime = time.Now()
-	
+
 	// Update total rewards from blockchain
 	if cli.bc != nil {
 		cli.stats.TotalRewards = cli.bc.GetMinerRewards(cli.minerID)
 	}
-	
+
 	// Calculate average time
 	if cli.stats.BlocksMined == 1 {
 		cli.stats.AverageTime = duration
 	} else {
-		totalTime := cli.stats.AverageTime * time.Duration(cli.stats.BlocksMined-1) + duration
+		totalTime := cli.stats.AverageTime*time.Duration(cli.stats.BlocksMined-1) + duration
 		cli.stats.AverageTime = totalTime / time.Duration(cli.stats.BlocksMined)
 	}
 }
 
 func (cli *MinerCLI) showMiningSuccess(blockCount int, duration time.Duration) {
 	reward := cli.bc.CalculateReward(cli.difficulty)
-	fmt.Printf("✅ Block #%d mined in %v (Reward: %.2f)\n", 
+	fmt.Printf("✅ Block #%d mined in %v (Reward: %.2f)\n",
 		blockCount, duration.Round(time.Millisecond), reward)
 }
 
 func (cli *MinerCLI) showMiningSummary() {
-	uptime := time.Since(cli.stats.StartTime)
+	cli.statsMu.RLock()
+	blocksMined := cli.stats.BlocksMined
+	totalRewards := cli.stats.TotalRewards
+	startTime := cli.stats.StartTime
+	averageTime := cli.stats.AverageTime
+	cli.statsMu.RUnlock()
+
+	uptime := time.Since(startTime)
 	fmt.Println("\n📈 Mining Summary")
 	fmt.Println("=================")
 	fmt.Printf("⏱️  Total Uptime: %v\n", uptime.Round(time.Second))
-	fmt.Printf("📦 Blocks Mined: %d\n", cli.stats.BlocksMined)
-	fmt.Printf("💰 Total Rewards: %.2f\n", cli.stats.TotalRewards)
-	if cli.stats.AverageTime > 0 {
-		fmt.Printf("⚡ Average Block Time: %v\n", cli.stats.AverageTime.Round(time.Millisecond))
-		fmt.Printf("🚀 Mining Rate: %.2f blocks/hour\n", 
-			float64(cli.stats.BlocksMined)/uptime.Hours())
+	fmt.Printf("📦 Blocks Mined: %d\n", blocksMined)
+	fmt.Printf("💰 Total Rewards: %.2f\n", totalRewards)
+	if averageTime > 0 {
+		fmt.Printf("⚡ Average Block Time: %v\n", averageTime.Round(time.Millisecond))
+		fmt.Printf("🚀 Mining Rate: %.2f blocks/hour\n",
+			float64(blocksMined)/uptime.Hours())
 	}
 }
 
@@ -284,15 +302,28 @@ func (cli *MinerCLI) displayStatsPeriodically() {
 	ticker := time.NewTicker(StatsUpdateInterval)
 	defer ticker.Stop()
 
-	for cli.isMining {
+	for {
 		<-ticker.C
-		if cli.stats.BlocksMined > 0 {
-			uptime := time.Since(cli.stats.StartTime)
+
+		cli.statsMu.RLock()
+		isMining := cli.isMining
+		blocksMined := cli.stats.BlocksMined
+		totalRewards := cli.stats.TotalRewards
+		startTime := cli.stats.StartTime
+		averageTime := cli.stats.AverageTime
+		cli.statsMu.RUnlock()
+
+		if !isMining {
+			return
+		}
+
+		if blocksMined > 0 {
+			uptime := time.Since(startTime)
 			fmt.Printf("\n📊 [Live] Blocks: %d | Rewards: %.2f | Uptime: %v | Avg Time: %v\n",
-				cli.stats.BlocksMined, 
-				cli.stats.TotalRewards,
+				blocksMined,
+				totalRewards,
 				uptime.Round(time.Second),
-				cli.stats.AverageTime.Round(time.Millisecond))
+				averageTime.Round(time.Millisecond))
 		}
 	}
 }

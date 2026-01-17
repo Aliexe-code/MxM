@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"log"
 	"math"
 	"strings"
 	"testing"
@@ -25,7 +26,7 @@ func init() {
 	var err error
 	testPrivateKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		panic("Failed to generate test key")
+		log.Fatalf("Failed to generate test key: %v", err)
 	}
 	testPublicKey = &testPrivateKey.PublicKey
 }
@@ -266,7 +267,8 @@ func TestValidateAmounts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.tx.ValidateAmounts()
+			utxoSet := make(map[string]map[int]TxOutput)
+			err := tt.tx.ValidateAmounts(utxoSet)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateAmounts() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -431,7 +433,7 @@ func TestGetTransactionSummary(t *testing.T) {
 		[]TxOutput{{Address: testAddress, Amount: 1.0}},
 	)
 
-	summary := tx.GetTransactionSummary()
+	summary := tx.GetTransactionSummary(make(map[string]map[int]TxOutput))
 
 	if summary["input_count"].(int) != 1 {
 		t.Errorf("Expected input_count 1, got %v", summary["input_count"])
@@ -566,7 +568,8 @@ func TestGetInfo(t *testing.T) {
 		[]TxOutput{{Address: testAddress, Amount: 1.0}},
 	)
 
-	info := tx.GetInfo()
+	utxoSet := make(map[string]map[int]TxOutput)
+	info := tx.GetInfo(utxoSet)
 	if info["id"] != tx.ID {
 		t.Error("Info ID should match transaction ID")
 	}
@@ -862,7 +865,7 @@ func TestCalculateIDWithEmptyTransaction(t *testing.T) {
 		Outputs:   []TxOutput{},
 		Timestamp: 0,
 	}
-	
+
 	id := tx.CalculateID()
 	assert.NotEmpty(t, id, "ID should not be empty even for empty transaction")
 }
@@ -874,7 +877,7 @@ func TestCalculateIDWithInvalidData(t *testing.T) {
 		Outputs:   []TxOutput{{Address: "", Amount: -1}},
 		Timestamp: 0,
 	}
-	
+
 	id := tx.CalculateID()
 	assert.NotEmpty(t, id, "ID should be generated even with invalid data")
 }
@@ -891,7 +894,7 @@ func TestToJSONWithComplexTransaction(t *testing.T) {
 		},
 	)
 	tx.Timestamp = 1234567890
-	
+
 	jsonStr, err := tx.ToJSON()
 	assert.NoError(t, err)
 	assert.Contains(t, jsonStr, "sig123")
@@ -940,7 +943,7 @@ func TestValidateAmountsComprehensive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.tx.ValidateAmounts()
+			err := tt.tx.ValidateAmounts(make(map[string]map[int]TxOutput))
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errMsg)
@@ -1007,9 +1010,9 @@ func TestGetValidationReportComprehensive(t *testing.T) {
 	// Test valid coinbase
 	tx := NewCoinbaseTransaction(testAddress, 1.0)
 	utxoSet := map[string]map[int]TxOutput{}
-	
+
 	report := tx.GetValidationReport(utxoSet)
-	
+
 	assert.True(t, report["is_valid"].(bool))
 	assert.Empty(t, report["errors"].([]string))
 	assert.Empty(t, report["warnings"].([]string))
@@ -1248,7 +1251,8 @@ func TestValidateAmountsWithValidFee(t *testing.T) {
 
 	// Mock the GetInputAmount to return a higher value
 	// This test ensures the fee validation path is covered
-	err := tx.ValidateAmounts()
+	utxoSet := make(map[string]map[int]TxOutput)
+	err := tx.ValidateAmounts(utxoSet)
 	// Since GetInputAmount returns 0, this should fail
 	assert.Error(t, err)
 }
@@ -1294,9 +1298,10 @@ func TestValidateTransactionStructureWithSignedTransaction(t *testing.T) {
 		"prev": {0: {Address: testAddress2, Amount: 2.0}},
 	}
 
-	// This should still fail due to input amount calculation
+	// With proper UTXO set, the transaction should pass all validation
+	// (input amount is now calculated correctly from UTXO set)
 	err = tx.ValidateTransactionStructure(utxoSet)
-	assert.Error(t, err)
+	assert.NoError(t, err)
 }
 
 func TestGetValidationReportWithWarnings(t *testing.T) {
@@ -1304,14 +1309,14 @@ func TestGetValidationReportWithWarnings(t *testing.T) {
 		[]TxInput{{TxID: "prev", Index: 0}},
 		[]TxOutput{{Address: testAddress, Amount: 0.001}}, // Small amount
 	)
-	
+
 	// Create a UTXO that would result in high fee
 	utxoSet := map[string]map[int]TxOutput{
 		"prev": {0: {Address: testAddress2, Amount: 1.0}},
 	}
 
 	report := tx.GetValidationReport(utxoSet)
-	
+
 	// Should have errors due to signature verification
 	assert.False(t, report["is_valid"].(bool))
 	assert.NotEmpty(t, report["errors"].([]string))
@@ -1378,7 +1383,7 @@ func TestValidateAmountsWithPositiveAmounts(t *testing.T) {
 	}
 
 	// This should fail due to input amount being 0, but covers the validation logic
-	err := tx.ValidateAmounts()
+	err := tx.ValidateAmounts(make(map[string]map[int]TxOutput))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds input amount")
 }
@@ -1473,7 +1478,7 @@ func TestValidateAmountsFullCoverage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.tx.ValidateAmounts()
+			err := tt.tx.ValidateAmounts(make(map[string]map[int]TxOutput))
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -1486,15 +1491,15 @@ func TestValidateAmountsFullCoverage(t *testing.T) {
 func TestValidateAmountsWithMultipleOutputs(t *testing.T) {
 	// Test the individual output validation loop
 	tx := &Transaction{
-		ID:      "test",
-		Inputs:  []TxInput{{TxID: "prev", Index: 0}},
+		ID:     "test",
+		Inputs: []TxInput{{TxID: "prev", Index: 0}},
 		Outputs: []TxOutput{
 			{Address: testAddress, Amount: 0.5},
 			{Address: testAddress2, Amount: -1.0}, // Invalid
 		},
 	}
 
-	err := tx.ValidateAmounts()
+	err := tx.ValidateAmounts(make(map[string]map[int]TxOutput))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "has invalid amount")
 }
@@ -1507,7 +1512,7 @@ func TestValidateAmountsWithEqualAmounts(t *testing.T) {
 		Outputs: []TxOutput{{Address: testAddress, Amount: 1.0}},
 	}
 
-	err := tx.ValidateAmounts()
+	err := tx.ValidateAmounts(make(map[string]map[int]TxOutput))
 	// Should fail because input amount is 0
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds input amount")
@@ -1516,9 +1521,9 @@ func TestValidateAmountsWithEqualAmounts(t *testing.T) {
 func TestToJSONWithInvalidData(t *testing.T) {
 	// Test ToJSON with problematic data that might cause issues
 	tx := &Transaction{
-		ID:      "test",
-		Inputs:  []TxInput{{TxID: "test", Index: 0, Signature: "sig", PublicKey: "key"}},
-		Outputs: []TxOutput{{Address: testAddress, Amount: 1.5}},
+		ID:        "test",
+		Inputs:    []TxInput{{TxID: "test", Index: 0, Signature: "sig", PublicKey: "key"}},
+		Outputs:   []TxOutput{{Address: testAddress, Amount: 1.5}},
 		Timestamp: 1234567890,
 	}
 
@@ -1735,8 +1740,8 @@ func TestValidateBasicEdgeCases(t *testing.T) {
 		{
 			name: "transaction with negative input index",
 			tx: &Transaction{
-				ID:     "test",
-				Inputs: []TxInput{{TxID: "prev", Index: -1}},
+				ID:      "test",
+				Inputs:  []TxInput{{TxID: "prev", Index: -1}},
 				Outputs: []TxOutput{{Address: testAddress, Amount: 1.0}},
 			},
 			wantErr: true,
@@ -1745,8 +1750,8 @@ func TestValidateBasicEdgeCases(t *testing.T) {
 		{
 			name: "transaction with empty transaction ID",
 			tx: &Transaction{
-				ID:     "",
-				Inputs: []TxInput{{TxID: "prev", Index: 0}},
+				ID:      "",
+				Inputs:  []TxInput{{TxID: "prev", Index: 0}},
 				Outputs: []TxOutput{{Address: testAddress, Amount: 1.0}},
 			},
 			wantErr: true,
@@ -2028,7 +2033,7 @@ func TestValidateAmountsComplexScenarios(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.tx.ValidateAmounts()
+			err := tt.tx.ValidateAmounts(make(map[string]map[int]TxOutput))
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -2108,14 +2113,14 @@ func TestGetValidationReportComplexPaths(t *testing.T) {
 		[]TxInput{{TxID: "prev", Index: 0}},
 		[]TxOutput{{Address: testAddress, Amount: 0.001}}, // Small amount
 	)
-	
+
 	// Create UTXO set that would cause multiple validation errors
 	utxoSet := map[string]map[int]TxOutput{
 		"prev": {0: {Address: testAddress2, Amount: 10.0}},
 	}
 
 	report := tx.GetValidationReport(utxoSet)
-	
+
 	// Should have validation errors due to signature verification
 	assert.False(t, report["is_valid"].(bool))
 	assert.NotEmpty(t, report["errors"].([]string))

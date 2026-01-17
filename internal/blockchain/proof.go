@@ -11,8 +11,15 @@ import (
 )
 
 const (
-	DefaultDifficulty = 4
-	MaxNonce          = 10000000 // Reasonable limit to prevent infinite loop
+	DefaultDifficulty    = 4
+	MaxNonce             = 10000000        // Reasonable limit to prevent infinite loop
+	DefaultMiningTimeout = 5 * time.Second // Default timeout for mining operations
+
+	// Difficulty adjustment constants
+	TargetBlockTime    = 2 * time.Minute // Target time between blocks
+	AdjustmentInterval = 10              // Number of blocks between difficulty adjustments
+	MinDifficulty      = 1               // Minimum difficulty
+	MaxDifficulty      = 32              // Maximum difficulty
 )
 
 type ProofOfWork struct {
@@ -48,18 +55,23 @@ func (pow *ProofOfWork) prepareData(nonce uint32) []byte {
 	return data
 }
 
-func (pow *ProofOfWork) Run() (uint32, []byte, time.Duration) {
+func (pow *ProofOfWork) Run(ctx context.Context) (uint32, []byte, time.Duration) {
 	var hashInt big.Int
 	var hash [32]byte
 	var nonce uint32
 
 	startTime := time.Now()
 
-	// For testing, use a much lower timeout and better progress tracking
-	maxAttempts := uint32(100000) // Reduced attempts for faster testing
-	for nonce = 0; nonce < MaxNonce && nonce < maxAttempts; nonce++ {
+	// Combine contexts for proper cancellation
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Use configurable timeout instead of hardcoded 200ms
+	for nonce = 0; nonce < MaxNonce; nonce++ {
 		// Check for cancellation
 		select {
+		case <-ctx.Done():
+			return 0, nil, time.Since(startTime)
 		case <-pow.cancelCtx.Done():
 			return 0, nil, time.Since(startTime)
 		default:
@@ -75,8 +87,8 @@ func (pow *ProofOfWork) Run() (uint32, []byte, time.Duration) {
 			return nonce, hash[:], duration
 		}
 
-		// Add timeout for tests - if mining takes too long, stop
-		if time.Since(startTime) > 200*time.Millisecond {
+		// Check for timeout
+		if time.Since(startTime) > DefaultMiningTimeout {
 			return 0, nil, time.Since(startTime)
 		}
 	}
@@ -116,7 +128,7 @@ func (pow *ProofOfWork) SetDifficulty(difficulty int) {
 	pow.Difficulty = difficulty
 	pow.Target = big.NewInt(1)
 	pow.Target.Lsh(pow.Target, uint(256-4*difficulty))
-	
+
 	// Create new cancellation context
 	if pow.cancelFunc != nil {
 		pow.cancelFunc() // Cancel any existing mining
@@ -124,4 +136,79 @@ func (pow *ProofOfWork) SetDifficulty(difficulty int) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pow.cancelCtx = ctx
 	pow.cancelFunc = cancel
+}
+
+// DifficultyAdjuster handles dynamic difficulty adjustment
+type DifficultyAdjuster struct {
+	blocks []*Block
+}
+
+// NewDifficultyAdjuster creates a new difficulty adjuster
+func NewDifficultyAdjuster(blocks []*Block) *DifficultyAdjuster {
+	return &DifficultyAdjuster{
+		blocks: blocks,
+	}
+}
+
+// CalculateNewDifficulty calculates the new difficulty based on recent block times
+// This ensures stable block production regardless of network hashrate changes
+func (da *DifficultyAdjuster) CalculateNewDifficulty() int {
+	if len(da.blocks) < AdjustmentInterval {
+		return DefaultDifficulty
+	}
+
+	// Get the last AdjustmentInterval blocks
+	startIndex := len(da.blocks) - AdjustmentInterval
+	recentBlocks := da.blocks[startIndex:]
+
+	// Calculate average block time
+	var totalTime time.Duration
+	for i := 1; i < len(recentBlocks); i++ {
+		blockTime := time.Duration(recentBlocks[i].Timestamp - recentBlocks[i-1].Timestamp)
+		totalTime += blockTime
+	}
+
+	avgBlockTime := totalTime / time.Duration(AdjustmentInterval-1)
+	currentDifficulty := da.blocks[len(da.blocks)-1].Difficulty
+
+	// Adjust difficulty based on average block time
+	// If blocks are too fast, increase difficulty
+	// If blocks are too slow, decrease difficulty
+	newDifficulty := currentDifficulty
+
+	if avgBlockTime > TargetBlockTime*2 {
+		// Blocks are too slow, decrease difficulty
+		newDifficulty = max(MinDifficulty, currentDifficulty-1)
+	} else if avgBlockTime < TargetBlockTime/2 {
+		// Blocks are too fast, increase difficulty
+		newDifficulty = min(MaxDifficulty, currentDifficulty+1)
+	}
+
+	return newDifficulty
+}
+
+// CalculateNewDifficultyForBlockchain calculates the new difficulty for a blockchain
+func CalculateNewDifficultyForBlockchain(bc *Blockchain) int {
+	if len(bc.Blocks) < AdjustmentInterval {
+		return DefaultDifficulty
+	}
+
+	adjuster := NewDifficultyAdjuster(bc.Blocks)
+	return adjuster.CalculateNewDifficulty()
+}
+
+// max returns the maximum of two integers
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

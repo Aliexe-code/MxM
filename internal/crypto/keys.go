@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -60,14 +61,23 @@ func generateAddress(publicKey *ecdsa.PublicKey) (string, error) {
 	pubKeyBytes = append(pubKeyBytes, publicKey.X.Bytes()...)
 	pubKeyBytes = append(pubKeyBytes, publicKey.Y.Bytes()...)
 
-	// Hash the public key
-	hash := sha256.Sum256(pubKeyBytes)
+	// Double SHA256 for better collision resistance (like Bitcoin)
+	hash1 := sha256.Sum256(pubKeyBytes)
+	hash2 := sha256.Sum256(hash1[:])
 
-	// Take first 20 bytes of hash (like Bitcoin)
-	addressBytes := hash[:20]
+	// Take first 20 bytes of double hash as address bytes
+	addressBytes := hash2[:20]
+
+	// Calculate checksum by double hashing the address bytes
+	checksumHash1 := sha256.Sum256(addressBytes)
+	checksumHash2 := sha256.Sum256(checksumHash1[:])
+	checksum := checksumHash2[:4]
+
+	// Combine address bytes and checksum
+	fullAddress := append(addressBytes, checksum...)
 
 	// Convert to hex string with prefix
-	address := "0x" + hex.EncodeToString(addressBytes)
+	address := "0x" + hex.EncodeToString(fullAddress)
 
 	return address, nil
 }
@@ -249,12 +259,30 @@ func ValidateAddress(address string) bool {
 	}
 
 	hexPart := strings.TrimPrefix(address, "0x")
-	if len(hexPart) != 40 { // 20 bytes = 40 hex characters
+	if len(hexPart) != 48 { // 24 bytes = 48 hex characters (20 address + 4 checksum)
 		return false
 	}
 
-	_, err := hex.DecodeString(hexPart)
-	return err == nil
+	decodedBytes, err := hex.DecodeString(hexPart)
+	if err != nil {
+		return false
+	}
+
+	// Verify checksum
+	if len(decodedBytes) != 24 {
+		return false
+	}
+
+	addressBytes := decodedBytes[:20]
+	checksum := decodedBytes[20:24]
+
+	// Recalculate checksum
+	hash1 := sha256.Sum256(addressBytes)
+	hash2 := sha256.Sum256(hash1[:])
+	expectedChecksum := hash2[:4]
+
+	// Compare checksums
+	return bytes.Equal(checksum, expectedChecksum)
 }
 
 // DerivePublicKey derives public key from private key

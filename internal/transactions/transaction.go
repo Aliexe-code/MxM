@@ -85,12 +85,15 @@ func (tx *Transaction) CalculateID() string {
 func (tx *Transaction) IsCoinbase() bool {
 	return len(tx.Inputs) == 0
 }
-func (tx *Transaction) GetInputAmount() float64 {
+func (tx *Transaction) GetInputAmount(utxoSet map[string]map[int]TxOutput) float64 {
 	var amount float64
-	for range tx.Inputs {
-		// In a real implementation, this would look up the referenced output
-		// For testing purposes, assume each input has 2.0 amount
-		amount += 2.0
+	for _, input := range tx.Inputs {
+		// Look up the referenced output in the UTXO set
+		if outputs, exists := utxoSet[input.TxID]; exists {
+			if output, exists := outputs[input.Index]; exists {
+				amount += output.Amount
+			}
+		}
 	}
 	return amount
 }
@@ -102,11 +105,11 @@ func (tx *Transaction) GetOutputAmount() float64 {
 	return amount
 }
 
-func (tx *Transaction) GetFee() float64 {
+func (tx *Transaction) GetFee(utxoSet map[string]map[int]TxOutput) float64 {
 	if tx.IsCoinbase() {
 		return 0 // Coinbase transactions have no fee
 	}
-	return tx.GetInputAmount() - tx.GetOutputAmount()
+	return tx.GetInputAmount(utxoSet) - tx.GetOutputAmount()
 }
 func (tx *Transaction) ToJSON() (string, error) {
 	jsonData, err := json.MarshalIndent(tx, "", "  ")
@@ -171,15 +174,15 @@ func (tx *Transaction) String() string {
 }
 
 // GetInfo returns detailed information about the transaction
-func (tx *Transaction) GetInfo() map[string]interface{} {
+func (tx *Transaction) GetInfo(utxoSet map[string]map[int]TxOutput) map[string]interface{} {
 	return map[string]interface{}{
 		"id":            tx.ID,
 		"is_coinbase":   tx.IsCoinbase(),
 		"input_count":   len(tx.Inputs),
 		"output_count":  len(tx.Outputs),
-		"input_amount":  tx.GetInputAmount(),
+		"input_amount":  tx.GetInputAmount(utxoSet),
 		"output_amount": tx.GetOutputAmount(),
-		"fee":           tx.GetFee(),
+		"fee":           tx.GetFee(utxoSet),
 		"timestamp":     tx.Timestamp,
 	}
 }

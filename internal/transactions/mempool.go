@@ -10,22 +10,22 @@ import (
 
 // MempoolConfig defines configuration for the mempool
 type MempoolConfig struct {
-	MaxSize       int           // Maximum number of transactions in pool
-	MaxAge        time.Duration // Maximum age of transactions before removal
-	MinFeeRate    float64       // Minimum fee rate to accept transactions
-	MaxTxSize     int           // Maximum transaction size in bytes
-	ValidateTx    bool          // Whether to validate transactions before adding
+	MaxSize         int           // Maximum number of transactions in pool
+	MaxAge          time.Duration // Maximum age of transactions before removal
+	MinFeeRate      float64       // Minimum fee rate to accept transactions
+	MaxTxSize       int           // Maximum transaction size in bytes
+	ValidateTx      bool          // Whether to validate transactions before adding
 	CleanupInterval time.Duration // Interval for cleaning old transactions
 }
 
 // DefaultMempoolConfig returns default mempool configuration
 func DefaultMempoolConfig() MempoolConfig {
 	return MempoolConfig{
-		MaxSize:        5000,
-		MaxAge:         24 * time.Hour,
-		MinFeeRate:     0.00001,
-		MaxTxSize:      100000, // 100KB
-		ValidateTx:     true,
+		MaxSize:         5000,
+		MaxAge:          24 * time.Hour,
+		MinFeeRate:      0.00001,
+		MaxTxSize:       100000, // 100KB
+		ValidateTx:      true,
 		CleanupInterval: 10 * time.Minute,
 	}
 }
@@ -36,17 +36,20 @@ type MempoolEntry struct {
 	FeeRate     float64
 	Size        int
 	AddedAt     time.Time
-	Priority    int
+	Priority    int64
 }
 
 // Mempool manages pending transactions
 type Mempool struct {
-	config      MempoolConfig
-	transactions map[string]*MempoolEntry // txID -> entry
-	byAddress   map[string][]string      // address -> []txID
+	config        MempoolConfig
+	transactions  map[string]*MempoolEntry // txID -> entry
+	byAddress     map[string][]string      // address -> []txID
 	priorityQueue *PriorityQueue
-	mu         sync.RWMutex
-	lastCleanup time.Time
+	removedEntries map[string]bool         // track removed entries in priority queue
+	mu            sync.RWMutex
+	cleanupTicker *time.Ticker
+	cleanupStop   chan struct{}
+	running       bool
 }
 
 // NewMempool creates a new mempool with default configuration
@@ -57,18 +60,66 @@ func NewMempool() *Mempool {
 // NewMempoolWithConfig creates a new mempool with custom configuration
 func NewMempoolWithConfig(config MempoolConfig) *Mempool {
 	mp := &Mempool{
-		config:        config,
-		transactions:  make(map[string]*MempoolEntry),
-		byAddress:     make(map[string][]string),
-		priorityQueue: &PriorityQueue{},
-		lastCleanup:   time.Now(),
+		config:         config,
+		transactions:   make(map[string]*MempoolEntry),
+		byAddress:      make(map[string][]string),
+		priorityQueue:  &PriorityQueue{},
+		removedEntries: make(map[string]bool),
+		cleanupTicker:  time.NewTicker(config.CleanupInterval),
+		cleanupStop:    make(chan struct{}),
+		running:        false,
 	}
 	heap.Init(mp.priorityQueue)
 	return mp
 }
 
+// Start starts the mempool cleanup goroutine
+func (mp *Mempool) Start() {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+
+	if mp.running {
+		return
+	}
+
+	mp.running = true
+	go mp.cleanupLoop()
+}
+
+// Stop stops the mempool cleanup goroutine
+func (mp *Mempool) Stop() {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+
+	if !mp.running {
+		return
+	}
+
+	mp.running = false
+	close(mp.cleanupStop)
+	mp.cleanupTicker.Stop()
+
+	// Create new channels and ticker for potential restart
+	mp.cleanupStop = make(chan struct{})
+	mp.cleanupTicker = time.NewTicker(mp.config.CleanupInterval)
+}
+
+// cleanupLoop runs the periodic cleanup in a controlled goroutine
+func (mp *Mempool) cleanupLoop() {
+	defer mp.cleanupTicker.Stop()
+
+	for {
+		select {
+		case <-mp.cleanupTicker.C:
+			mp.cleanupOldTransactions()
+		case <-mp.cleanupStop:
+			return
+		}
+	}
+}
+
 // AddTransaction adds a transaction to the mempool
-func (mp *Mempool) AddTransaction(tx *Transaction) error {
+func (mp *Mempool) AddTransaction(tx *Transaction, utxoSet map[string]map[int]TxOutput) error {
 	mp.mu.Lock()
 	defer mp.mu.Unlock()
 
@@ -91,7 +142,7 @@ func (mp *Mempool) AddTransaction(tx *Transaction) error {
 	}
 
 	// Calculate fee rate
-	fee := tx.GetFee()
+	fee := tx.GetFee(utxoSet)
 	if fee <= 0 {
 		return fmt.Errorf("transaction must have positive fee")
 	}
@@ -107,6 +158,10 @@ func (mp *Mempool) AddTransaction(tx *Transaction) error {
 		if err := mp.evictLowestPriority(); err != nil {
 			return fmt.Errorf("mempool is full and cannot evict transactions: %w", err)
 		}
+		// Double-check after eviction
+		if len(mp.transactions) >= mp.config.MaxSize {
+			return fmt.Errorf("mempool is critically full, cannot add transaction")
+		}
 	}
 
 	// Create mempool entry
@@ -121,23 +176,15 @@ func (mp *Mempool) AddTransaction(tx *Transaction) error {
 	// Add to mempool
 	mp.transactions[tx.ID] = entry
 
-	// Update address index
-	// For now, we'll use a simplified approach
-	// In a real implementation, we'd need to resolve input addresses
-	mp.byAddress["unknown"] = append(mp.byAddress["unknown"], tx.ID)
-
+	// Update address index - track output addresses
+	// Note: Input addresses would need to be derived from PublicKey, which requires crypto functions
+	// For now, we track output addresses which are directly available
 	for _, output := range tx.Outputs {
 		mp.byAddress[output.Address] = append(mp.byAddress[output.Address], tx.ID)
 	}
 
 	// Add to priority queue
 	heap.Push(mp.priorityQueue, entry)
-
-	// Periodic cleanup
-	if time.Since(mp.lastCleanup) > mp.config.CleanupInterval {
-		go mp.cleanupOldTransactions()
-		mp.lastCleanup = time.Now()
-	}
 
 	return nil
 }
@@ -158,7 +205,7 @@ func (mp *Mempool) RemoveTransaction(txID string) bool {
 	mp.mu.Lock()
 	defer mp.mu.Unlock()
 
-	entry, exists := mp.transactions[txID]
+	_, exists := mp.transactions[txID]
 	if !exists {
 		return false
 	}
@@ -167,17 +214,22 @@ func (mp *Mempool) RemoveTransaction(txID string) bool {
 	delete(mp.transactions, txID)
 
 	// Remove from address index
-	for _, txIDs := range mp.byAddress {
-		for i, id := range txIDs {
-			if id == txID {
-				mp.byAddress[txIDs[0]] = append(txIDs[:i], txIDs[i+1:]...)
-				break
+	for address, txIDs := range mp.byAddress {
+		var filtered []string
+		for _, id := range txIDs {
+			if id != txID {
+				filtered = append(filtered, id)
 			}
+		}
+		if len(filtered) == 0 {
+			delete(mp.byAddress, address)
+		} else {
+			mp.byAddress[address] = filtered
 		}
 	}
 
-	// Remove from priority queue (mark as removed)
-	entry.Priority = -1 // Mark as removed
+	// Mark entry as removed in priority queue tracking
+	mp.removedEntries[txID] = true
 
 	return true
 }
@@ -235,25 +287,35 @@ func (mp *Mempool) GetTransactionsForBlock(maxSize, maxCount int) []*Transaction
 	mp.mu.Lock()
 	defer mp.mu.Unlock()
 
-	// Create a copy of the priority queue
-	pq := &PriorityQueue{}
-	heap.Init(pq)
+	if len(mp.transactions) == 0 {
+		return []*Transaction{}
+	}
 
-	// Add all valid transactions
+	// Create a copy of entries for selection
+	entries := make([]*MempoolEntry, 0, len(mp.transactions))
 	for _, entry := range mp.transactions {
 		if entry.Priority >= 0 { // Skip removed entries
-			heap.Push(pq, entry)
+			entries = append(entries, entry)
 		}
 	}
+
+	// Sort by priority (highest first)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Priority > entries[j].Priority
+	})
 
 	// Select transactions for block
 	var selected []*Transaction
 	var currentSize int
 
-	for pq.Len() > 0 && (maxCount == 0 || len(selected) < maxCount) {
-		entry := heap.Pop(pq).(*MempoolEntry)
-		
-		if currentSize+entry.Size > maxSize {
+	for _, entry := range entries {
+		// Check count limit
+		if maxCount > 0 && len(selected) >= maxCount {
+			break
+		}
+
+		// Check size limit
+		if maxSize > 0 && currentSize+entry.Size > maxSize {
 			continue
 		}
 
@@ -265,7 +327,7 @@ func (mp *Mempool) GetTransactionsForBlock(maxSize, maxCount int) []*Transaction
 }
 
 // ValidateAndRemoveInvalid removes invalid transactions from the mempool
-func (mp *Mempool) ValidateAndRemoveInvalid(utxoSet interface{}) []string { // TODO: Replace interface{} with UTXOSet type
+func (mp *Mempool) ValidateAndRemoveInvalid(utxoSet map[string]map[int]TxOutput) []string {
 	mp.mu.Lock()
 	defer mp.mu.Unlock()
 
@@ -279,8 +341,44 @@ func (mp *Mempool) ValidateAndRemoveInvalid(utxoSet interface{}) []string { // T
 			continue
 		}
 
-		// TODO: Add UTXO validation when UTXOSet is properly imported
-		// This would validate that all inputs are still unspent
+		// Fee validation
+		if entry.Transaction.GetFee(utxoSet) <= 0 {
+			delete(mp.transactions, txID)
+			removed = append(removed, txID)
+			continue
+		}
+
+		// Size validation
+		txSize := EstimateTransactionSize(len(entry.Transaction.Inputs), len(entry.Transaction.Outputs))
+		if txSize > mp.config.MaxTxSize {
+			delete(mp.transactions, txID)
+			removed = append(removed, txID)
+			continue
+		}
+
+		// Age validation
+		if time.Since(entry.AddedAt) > mp.config.MaxAge {
+			delete(mp.transactions, txID)
+			removed = append(removed, txID)
+			continue
+		}
+	}
+
+	// Clean up address index for removed transactions
+	for _, txID := range removed {
+		for address, txIDs := range mp.byAddress {
+			var filtered []string
+			for _, id := range txIDs {
+				if id != txID {
+					filtered = append(filtered, id)
+				}
+			}
+			if len(filtered) == 0 {
+				delete(mp.byAddress, address)
+			} else {
+				mp.byAddress[address] = filtered
+			}
+		}
 	}
 
 	return removed
@@ -293,13 +391,13 @@ func (mp *Mempool) GetStats() map[string]interface{} {
 
 	stats := map[string]interface{}{
 		"total_transactions": len(mp.transactions),
-		"total_size":        mp.getTotalSize(),
-		"total_fees":        mp.getTotalFees(),
-		"average_fee_rate":  mp.getAverageFeeRate(),
+		"total_size":         mp.getTotalSize(),
+		"total_fees":         mp.getTotalFees(),
+		"average_fee_rate":   mp.getAverageFeeRate(),
 		"oldest_transaction": mp.getOldestTransactionAge(),
 		"newest_transaction": mp.getNewestTransactionAge(),
-		"addresses":         len(mp.byAddress),
-		"capacity_used":     float64(len(mp.transactions)) / float64(mp.config.MaxSize) * 100,
+		"addresses":          len(mp.byAddress),
+		"capacity_used":      float64(len(mp.transactions)) / float64(mp.config.MaxSize) * 100,
 	}
 
 	return stats
@@ -312,6 +410,7 @@ func (mp *Mempool) Clear() {
 
 	mp.transactions = make(map[string]*MempoolEntry)
 	mp.byAddress = make(map[string][]string)
+	mp.removedEntries = make(map[string]bool)
 	mp.priorityQueue = &PriorityQueue{}
 	heap.Init(mp.priorityQueue)
 }
@@ -331,21 +430,31 @@ func (mp *Mempool) IsEmpty() bool {
 }
 
 // calculatePriority calculates transaction priority based on fee rate and age
-func (mp *Mempool) calculatePriority(tx *Transaction, feeRate float64) int {
+func (mp *Mempool) calculatePriority(tx *Transaction, feeRate float64) int64 {
 	txTime := time.Unix(tx.Timestamp, 0)
 	age := time.Since(txTime)
-	return int(feeRate*1e8) + int(age.Seconds())
+	return int64(feeRate*1e8) + int64(age.Seconds())
 }
 
 // evictLowestPriority removes the lowest priority transaction
 func (mp *Mempool) evictLowestPriority() error {
-	if mp.priorityQueue.Len() == 0 {
-		return fmt.Errorf("no transactions to evict")
+	// Pop and skip removed entries until we find a valid one or queue is empty
+	for mp.priorityQueue.Len() > 0 {
+		entry := heap.Pop(mp.priorityQueue).(*MempoolEntry)
+		txID := entry.Transaction.ID
+
+		// Skip if this entry has been removed
+		if mp.removedEntries[txID] {
+			delete(mp.removedEntries, txID)
+			continue
+		}
+
+		// Found a valid entry to evict
+		delete(mp.transactions, txID)
+		return nil
 	}
 
-	entry := heap.Pop(mp.priorityQueue).(*MempoolEntry)
-	delete(mp.transactions, entry.Transaction.ID)
-	return nil
+	return fmt.Errorf("no valid transactions to evict")
 }
 
 // cleanupOldTransactions removes transactions older than MaxAge
@@ -378,8 +487,10 @@ func (mp *Mempool) getTotalSize() int {
 
 func (mp *Mempool) getTotalFees() float64 {
 	total := 0.0
+	// Use stored fee rate * size to calculate total fees
+	// This avoids recalculating fees without proper UTXO set
 	for _, entry := range mp.transactions {
-		total += entry.Transaction.GetFee()
+		total += entry.FeeRate * float64(entry.Size)
 	}
 	return total
 }
@@ -395,7 +506,7 @@ func (mp *Mempool) getOldestTransactionAge() time.Duration {
 	if len(mp.transactions) == 0 {
 		return 0
 	}
-	
+
 	oldest := time.Now()
 	for _, entry := range mp.transactions {
 		if entry.AddedAt.Before(oldest) {
@@ -409,7 +520,7 @@ func (mp *Mempool) getNewestTransactionAge() time.Duration {
 	if len(mp.transactions) == 0 {
 		return 0
 	}
-	
+
 	newest := time.Time{}
 	for _, entry := range mp.transactions {
 		if entry.AddedAt.After(newest) {

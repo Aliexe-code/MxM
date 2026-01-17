@@ -1,6 +1,7 @@
 package blockchain
 
 import (
+	"context"
 	"math/big"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func TestProofOfWorkRun(t *testing.T) {
 	block := NewBlock([]byte("test data"), []byte("prevhash"))
 	pow := NewProofOfWork(block, 1) // Very low difficulty for fast testing
 
-	nonce, hash, duration := pow.Run()
+	nonce, hash, duration := pow.Run(context.Background())
 
 	if nonce == 0 {
 		t.Skip("Mining took too long, skipping test")
@@ -57,7 +58,7 @@ func TestProofOfWorkValidate(t *testing.T) {
 	pow := NewProofOfWork(block, 1)
 
 	// Mine the block
-	nonce, hash, _ := pow.Run()
+	nonce, hash, _ := pow.Run(context.Background())
 	block.Nonce = nonce
 	block.Hash = hash
 
@@ -235,7 +236,7 @@ func TestMiningWithMaxNonce(t *testing.T) {
 
 	// This should either succeed quickly or timeout gracefully
 	start := time.Now()
-	nonce, hash, duration := pow.Run()
+	nonce, hash, duration := pow.Run(context.Background())
 	elapsed := time.Since(start)
 
 	// If mining succeeded, verify the result
@@ -262,7 +263,7 @@ func TestProofOfWorkEdgeCases(t *testing.T) {
 	block := NewBlock([]byte{}, []byte{})
 	pow := NewProofOfWork(block, 1)
 
-	nonce, hash, duration := pow.Run()
+	nonce, hash, duration := pow.Run(context.Background())
 
 	if nonce == 0 {
 		t.Skip("Mining took too long, skipping test")
@@ -286,7 +287,7 @@ func TestProofOfWorkEdgeCases(t *testing.T) {
 	block2 := NewBlock(smallData, []byte("prevhash"))
 	pow2 := NewProofOfWork(block2, 1)
 
-	nonce2, hash2, duration2 := pow2.Run()
+	nonce2, hash2, duration2 := pow2.Run(context.Background())
 
 	if nonce2 == 0 {
 		t.Skip("Mining took too long, skipping test")
@@ -306,7 +307,7 @@ func TestMiningConsistency(t *testing.T) {
 	// Test that mining the same block with same difficulty produces consistent results
 	block1 := NewBlock([]byte("consistency test"), []byte("prevhash"))
 	block2 := NewBlock([]byte("consistency test"), []byte("prevhash"))
-	
+
 	// Ensure different timestamps by waiting a bit
 	time.Sleep(1 * time.Millisecond)
 	block2.Timestamp = block1.Timestamp + 1
@@ -375,7 +376,7 @@ func TestMiningCancellation(t *testing.T) {
 	var resultDuration time.Duration
 
 	go func() {
-		nonce, hash, duration := pow.Run()
+		nonce, hash, duration := pow.Run(context.Background())
 		resultNonce = nonce
 		resultHash = hash
 		resultDuration = duration
@@ -406,26 +407,26 @@ func TestMiningCancellation(t *testing.T) {
 
 func TestCancellableMining(t *testing.T) {
 	block := NewBlock([]byte("cancellable mining test"), []byte("prevhash"))
-	
+
 	// Get the proof of work and mining function
 	pow, miningFunc := block.MineBlockCancellable(1)
-	
+
 	// Start mining
 	done := make(chan bool)
 	var duration time.Duration
-	
+
 	go func() {
 		duration = miningFunc()
 		done <- true
 	}()
-	
+
 	// Cancel quickly
 	time.Sleep(10 * time.Millisecond)
 	pow.Cancel()
-	
+
 	// Wait for completion
 	<-done
-	
+
 	// Mining should have been cancelled quickly
 	if duration > 100*time.Millisecond {
 		t.Errorf("Mining should have been cancelled quickly, but took %v", duration)

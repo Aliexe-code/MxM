@@ -49,7 +49,7 @@ func LoadConfig() (*Config, error) {
 
 func SaveConfig(config *Config) error {
 	configPath := getConfigPath()
-	
+
 	// Ensure config directory exists
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
@@ -76,14 +76,14 @@ func (c *Config) Validate() error {
 	if c.MinerID == "" {
 		return fmt.Errorf("miner ID cannot be empty")
 	}
-	
+
 	if c.Difficulty < 1 || c.Difficulty > 8 {
 		return fmt.Errorf("difficulty must be between 1 and 8")
 	}
-	
+
 	if c.DataDir == "" {
 		return fmt.Errorf("data directory cannot be empty")
 	}
-	
+
 	return nil
 }

@@ -1,6 +1,7 @@
 package blockchain
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -55,14 +56,12 @@ func NewBlock(data []byte, prevHash []byte) *Block {
 
 func (b *Block) MineBlock(difficulty int) time.Duration {
 	pow := NewProofOfWork(b, difficulty)
-	nonce, hash, duration := pow.Run()
+	nonce, hash, duration := pow.Run(context.Background())
 	// Always set the difficulty, even if mining fails
 	b.Difficulty = difficulty
 	if hash != nil {
 		b.Nonce = nonce
 		b.Hash = hash
-	} else {
-		fmt.Printf("Failed to mine Block: %s\n", string(b.Data))
 	}
 	return duration
 }
@@ -73,7 +72,7 @@ func (b *Block) MineBlockCancellable(difficulty int) (*ProofOfWork, func() time.
 
 	// Return the mining function that can be called to start mining
 	miningFunc := func() time.Duration {
-		nonce, hash, duration := pow.Run()
+		nonce, hash, duration := pow.Run(context.Background())
 		// Always set the difficulty, even if mining fails
 		b.Difficulty = difficulty
 		if hash != nil {
